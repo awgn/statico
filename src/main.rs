@@ -3,6 +3,7 @@ use clap::Parser;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
+use hyper::server::conn::http2;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -40,6 +41,10 @@ struct Args {
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     #[arg(long)]
     uring: bool,
+
+    /// Enable HTTP/2 support (with HTTP/1.1 fallback)
+    #[arg(long)]
+    http2: bool,
 }
 
 /// Configuration shared across threads
@@ -84,9 +89,11 @@ fn main() -> Result<()> {
         let use_uring = args.uring;
         #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
         let use_uring = false;
+        
+        let http2_enabled = args.http2;
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_thread(i, addr, config, use_uring) {
+            if let Err(e) = run_thread(i, addr, config, use_uring, http2_enabled) {
                 eprintln!("Thread {} error: {}", i, e);
             }
         });
@@ -141,7 +148,7 @@ fn create_socket(addr: SocketAddr) -> Result<std::net::TcpListener> {
     Ok(socket.into())
 }
 
-fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring: bool) -> Result<()> {
+fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring: bool, http2_enabled: bool) -> Result<()> {
     // Create socket inside thread to ensure each thread has its own file descriptor
     let std_listener = create_socket(addr)?;
     std_listener.set_nonblocking(true)?;
@@ -200,16 +207,27 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
 
             // Spawn task to handle the connection
             tokio::task::spawn(async move {
-                if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(move |_req: Request<hyper::body::Incoming>| {
-                        let config = config.clone();
-                        async move {
-                            handle_request(config).await
-                        }
-                    }))
-                    .await
-                {
-                    eprintln!("Error serving connection: {:?}", err);
+                let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
+                    let config = config.clone();
+                    async move {
+                        handle_request(config).await
+                    }
+                });
+
+                if http2_enabled {
+                    if let Err(err) = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection(io, service)
+                        .await
+                    {
+                        eprintln!("Error serving connection: {:?}", err);
+                    }
+                } else {
+                    if let Err(err) = http1::Builder::new()
+                        .serve_connection(io, service)
+                        .await
+                    {
+                        eprintln!("Error serving connection: {:?}", err);
+                    }
                 }
             });
         }
