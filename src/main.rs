@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use tracing::{info, warn, error};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -56,6 +57,14 @@ struct ServerConfig {
 }
 
 fn main() -> Result<()> {
+    // Initialize tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        )
+        .init();
+
     let args = Args::parse();
 
     // Parse headers
@@ -64,7 +73,7 @@ fn main() -> Result<()> {
         if let Some((k, v)) = h.split_once(':') {
             parsed_headers.push((k.trim().to_string(), v.trim().to_string()));
         } else {
-            eprintln!("Warning: Invalid header format '{}', ignoring.", h);
+            warn!("Invalid header format '{}', ignoring", h);
         }
     }
 
@@ -78,7 +87,7 @@ fn main() -> Result<()> {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    println!("Starting server on {} with {} threads...", addr, args.threads);
+    info!("Starting server on {} with {} threads", addr, args.threads);
 
     let mut handles = Vec::new();
 
@@ -94,7 +103,7 @@ fn main() -> Result<()> {
 
         let handle = thread::spawn(move || {
             if let Err(e) = run_thread(i, addr, config, use_uring, http2_enabled) {
-                eprintln!("Thread {} error: {}", i, e);
+                error!("Thread {} error: {}", i, e);
             }
         });
         handles.push(handle);
@@ -113,7 +122,7 @@ fn load_body_content(body: Option<&str>) -> Result<Bytes> {
         Some(content) if content.starts_with('@') => {
             // Remove @ prefix and treat as file path
             let file_path = &content[1..];
-            println!("Loading body content from file: {}", file_path);
+            info!("Loading body content from file: {}", file_path);
             let file_content = std::fs::read_to_string(file_path)
                 .with_context(|| format!("Failed to read body file: {}", file_path))?;
             Ok(Bytes::from(file_content))
@@ -131,7 +140,7 @@ fn create_socket(addr: SocketAddr) -> Result<std::net::TcpListener> {
     #[cfg(unix)]
     {
         if let Err(e) = socket.set_reuse_port(true) {
-            eprintln!("Warning: SO_REUSEPORT failed: {}. Falling back to SO_REUSEADDR.", e);
+            warn!("SO_REUSEPORT failed: {}. Falling back to SO_REUSEADDR", e);
             socket.set_reuse_address(true)?;
         }
     }
@@ -156,16 +165,16 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
     // io_uring implementation for Linux
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     if _use_uring {
-        println!("Thread {} using io_uring runtime", id);
+        info!("Thread {} using io_uring runtime", id);
         return tokio_uring::start(async move {
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
-            println!("Thread {} listening on {} (io_uring)", id, addr);
+            info!("Thread {} listening on {} (io_uring)", id, addr);
 
             loop {
                 let (stream, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Thread {} accept error: {}", id, e);
+                        error!("Thread {} accept error: {}", id, e);
                         continue;
                     }
                 };
@@ -178,6 +187,7 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
                     // For a complete implementation, you'd need to implement
                     // the hyper service using io_uring's AsyncRead/AsyncWrite traits
                     // This is a placeholder showing the structure
+                    debug!("Handling connection with io_uring");
                     let _ = handle_connection_uring(stream, config).await;
                 });
             }
@@ -191,13 +201,13 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
 
     rt.block_on(async move {
         let listener = TcpListener::from_std(std_listener)?;
-        println!("Thread {} listening on {}", id, addr);
+        info!("Thread {} listening on {}", id, addr);
 
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Thread {} accept error: {}", id, e);
+                    error!("Thread {} accept error: {}", id, e);
                     continue;
                 }
             };
@@ -219,14 +229,14 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
                         .serve_connection(io, service)
                         .await
                     {
-                        eprintln!("Error serving connection: {:?}", err);
+                        error!("Error serving HTTP/2 connection: {:?}", err);
                     }
                 } else {
                     if let Err(err) = http1::Builder::new()
                         .serve_connection(io, service)
                         .await
                     {
-                        eprintln!("Error serving connection: {:?}", err);
+                        error!("Error serving HTTP/1.1 connection: {:?}", err);
                     }
                 }
             });
@@ -253,6 +263,6 @@ async fn handle_connection_uring(
     // Placeholder for io_uring connection handling
     // A full implementation would require implementing HTTP parsing
     // and response generation using io_uring's async I/O primitives
-    println!("Handling connection with io_uring (simplified implementation)");
+    debug!("Handling connection with io_uring (simplified implementation)");
     Ok(())
 }

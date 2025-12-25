@@ -20,6 +20,8 @@ bytes = "1.0"
 socket2 = { version = "0.6", features = ["all"] }
 anyhow = "1.0"
 num_cpus = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-uring = { version = "0.4", optional = true }
