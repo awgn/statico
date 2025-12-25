@@ -2,6 +2,13 @@
 name = "statico"
 version = "0.1.0"
 edition = "2021"
+authors = ["Nicola Bonelli <nicola@larthia.com>"]
+description = "A simple, high-performance HTTP webserver implemented in Rust that serves static responses"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/awgn/statico"
+readme = "README.md"
+keywords = ["cli", "utility", "benchmark", "http"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

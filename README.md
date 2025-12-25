@@ -5,7 +5,7 @@ A simple, high-performance HTTP webserver implemented in Rust that serves static
 ## Features
 
 - **Multi-threaded**: Configurable number of worker threads
-- **SO_REUSEPORT**: Multiple threads can bind to the same port for load balancing (Linux/Android)
+- **SO_REUSEPORT**: Multiple threads can bind to the same port for load balancing 
 - **Single-threaded Tokio runtime per thread**: Each worker thread runs its own Tokio current-thread runtime
 - **Configurable responses**: Set custom HTTP status codes, headers, and response body
 - **File-based responses**: Load response body from files using `@filename` syntax
@@ -118,7 +118,7 @@ Start a server on port 8080 with default settings:
 - The main thread parses command line arguments and spawns worker threads
 - Each worker thread creates its own socket bound to the same port using SO_REUSEPORT
 - Each worker thread runs a single-threaded Tokio runtime (`current_thread`)
-- The kernel load-balances incoming connections across threads (on Linux)
+- The kernel load-balances incoming connections across threads
 
 ### Socket Reuse
 - **Linux/Android**: Uses `SO_REUSEPORT` for true load balancing across threads
@@ -162,22 +162,6 @@ curl -v http://localhost:8080
 # Load test with Apache Bench
 ab -n 10000 -c 100 http://localhost:8080/
 ```
-
-## Dependencies
-
-- `clap` - Command line argument parsing
-- `hyper` - HTTP server implementation
-- `tokio` - Async runtime
-- `socket2` - Low-level socket operations
-- `anyhow` - Error handling
-- `bytes` - Byte buffer utilities
-- `http-body-util` - HTTP body utilities
-- `hyper-util` - Hyper utilities
-- `num_cpus` - CPU core detection
-- `libc` - System calls for SO_REUSEPORT
-
-Optional:
-- `tokio-uring` - io_uring support (Linux only)
 
 ## License
 
