@@ -20,3 +20,10 @@ tokio-uring = { version = "0.4", optional = true }
 [features]
 default = []
 io_uring = ["tokio-uring"]
+
+[profile.release]
+debug = false
+opt-level = 3
+strip = true
+codegen-units = 1
+lto = true

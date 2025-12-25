@@ -63,9 +63,12 @@ fn main() -> Result<()> {
         }
     }
 
+    // Load body content - either from string or file if starts with @
+    let body_content = load_body_content(args.body.as_deref())?;
+
     let config = Arc::new(ServerConfig {
         status: StatusCode::from_u16(args.status).context("Invalid status code")?,
-        body: Bytes::from(args.body.unwrap_or_default()),
+        body: body_content,
         headers: parsed_headers,
     });
 
@@ -96,6 +99,21 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_body_content(body: Option<&str>) -> Result<Bytes> {
+    match body {
+        Some(content) if content.starts_with('@') => {
+            // Remove @ prefix and treat as file path
+            let file_path = &content[1..];
+            println!("Loading body content from file: {}", file_path);
+            let file_content = std::fs::read_to_string(file_path)
+                .with_context(|| format!("Failed to read body file: {}", file_path))?;
+            Ok(Bytes::from(file_content))
+        }
+        Some(content) => Ok(Bytes::from(content.to_string())),
+        None => Ok(Bytes::new()),
+    }
 }
 
 fn create_socket(addr: SocketAddr) -> Result<std::net::TcpListener> {
