@@ -24,7 +24,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-uring = { version = "0.4", optional = true }
+tokio-uring = { version = "0.5.0", optional = true }
 
 [features]
 default = []
