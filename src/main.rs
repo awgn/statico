@@ -165,6 +165,7 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
     // io_uring implementation for Linux
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     if _use_uring {
+        use tracing::debug;
         info!("Thread {} using io_uring runtime", id);
         return tokio_uring::start(async move {
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
@@ -181,14 +182,11 @@ fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, _use_uring
 
                 let config = config.clone();
                 
-                // Note: Full hyper integration with io_uring requires additional work
-                // This is a simplified version that shows the concept
+                // Spawn task to handle the connection with io_uring
                 tokio_uring::spawn(async move {
-                    // For a complete implementation, you'd need to implement
-                    // the hyper service using io_uring's AsyncRead/AsyncWrite traits
-                    // This is a placeholder showing the structure
-                    debug!("Handling connection with io_uring");
-                    let _ = handle_connection_uring(stream, config).await;
+                    if let Err(e) = handle_connection_uring(stream, config).await {
+                        error!("Error handling io_uring connection: {}", e);
+                    }
                 });
             }
         });
@@ -257,12 +255,60 @@ async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes
 
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 async fn handle_connection_uring(
-    _stream: tokio_uring::net::TcpStream,
-    _config: Arc<ServerConfig>,
+    stream: tokio_uring::net::TcpStream,
+    config: Arc<ServerConfig>,
 ) -> Result<()> {
-    // Placeholder for io_uring connection handling
-    // A full implementation would require implementing HTTP parsing
-    // and response generation using io_uring's async I/O primitives
-    debug!("Handling connection with io_uring (simplified implementation)");
+    use std::str;
+    use tracing::debug;
+    
+    debug!("Handling new connection with io_uring");
+    
+    // Read buffer for HTTP request
+    let mut buf = vec![0u8; 8192];
+    
+    // Read the HTTP request
+    let (result, buf) = stream.read(buf).await;
+    let n = result.map_err(|e| anyhow::anyhow!("Failed to read from stream: {}", e))?;
+    
+    if n == 0 {
+        debug!("Connection closed by client");
+        return Ok(());
+    }
+    
+    // Parse just enough to identify it as HTTP (we don't care about the specific request)
+    let request_str = str::from_utf8(&buf[..n]).unwrap_or("");
+    debug!("Received {} bytes: {}", n, request_str.lines().next().unwrap_or(""));
+    
+    // Generate HTTP response
+    let mut response = Vec::new();
+    
+    // Status line
+    response.extend_from_slice(
+        format!("HTTP/1.1 {} {}\r\n", 
+                config.status.as_u16(), 
+                config.status.canonical_reason().unwrap_or("Unknown")).as_bytes()
+    );
+    
+    // Headers
+    for (name, value) in &config.headers {
+        response.extend_from_slice(format!("{}: {}\r\n", name, value).as_bytes());
+    }
+    
+    // Content-Length header
+    response.extend_from_slice(format!("Content-Length: {}\r\n", config.body.len()).as_bytes());
+    
+    // End of headers
+    response.extend_from_slice(b"\r\n");
+    
+    // Body
+    response.extend_from_slice(&config.body);
+    
+    debug!("Sending {} bytes response", response.len());
+    
+    // Write response
+    let (result, _) = stream.write(response).await;
+    result.map_err(|e| anyhow::anyhow!("Failed to write response: {}", e))?;
+    
+    debug!("Response sent successfully");
     Ok(())
 }
