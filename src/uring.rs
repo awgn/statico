@@ -1,21 +1,22 @@
-use anyhow::{Result};
+use anyhow::Result;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::server::conn::http1;
-use hyper::server::conn::http2;
+
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use tracing::error;
 use std::convert::Infallible;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::duplex;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
+use tokio::io::{duplex, AsyncRead, AsyncWrite};
+use tracing::error;
 
-use crate::ServerConfig;
 use crate::hyper_srv::create_listener;
+use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
@@ -117,95 +118,147 @@ async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes
     Ok(builder.body(Full::new(config.body.clone()))?)
 }
 
+/// Socket wrapper that captures written bytes while simulating a real connection
+struct CaptureWrapper {
+    inner: tokio::io::DuplexStream,
+    captured: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CaptureWrapper {
+    fn new(inner: tokio::io::DuplexStream) -> Self {
+        Self {
+            inner,
+            captured: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl AsyncRead for CaptureWrapper {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for CaptureWrapper {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        // Capture the bytes being written
+        self.captured.lock().unwrap().extend_from_slice(buf);
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 pub async fn to_bytes(response: Response<Full<Bytes>>, http2: bool) -> Vec<u8> {
-    let (mut client, server) = duplex(1024 * 64);
-    tokio::spawn(async move {
+    let (client, server) = duplex(8192);
+    let capture_server = CaptureWrapper::new(server);
+    let captured_ref = capture_server.captured.clone();
+
+    let handle = tokio::spawn(async move {
         let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
             let res = response.clone();
             async move { Ok::<_, Infallible>(res) }
         });
 
         if http2 {
-            let _ = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(TokioIo::new(server), service)
+            let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection(TokioIo::new(capture_server), service)
                 .await;
         } else {
-            let _ = http1::Builder::new()
-                //.keep_alive(false)
-                .serve_connection(TokioIo::new(server), service)
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(capture_server), service)
                 .await;
         }
     });
 
+    // Send a request to trigger the response
+    let mut client = client;
     if http2 {
-        // Send HTTP/2 connection preface
-        let _ = client.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").await;
-        // Send SETTINGS frame
-        let _ = client
-            .write_all(&[0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00])
+        tokio::spawn(async move {
+            let client_connection =
+                hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .handshake(TokioIo::new(client))
             .await;
-        // Send HEADERS frame with simple GET request (stream 1)
-        let _ = client
-            .write_all(&[
-                0x00, 0x00, 0x05, 0x01, 0x05, 0x00, 0x00, 0x00, 0x01, 0x82, 0x86, 0x84, 0x41, 0x8a,
-            ])
-            .await;
+
+            if let Ok((mut sender, connection)) = client_connection {
+                tokio::spawn(connection);
+
+                let req = hyper::Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .header("host", "localhost")
+                    .body(http_body_util::Empty::<Bytes>::new())
+                    .unwrap();
+
+                let _ = sender.send_request(req).await;
+            }
+        });
     } else {
+        use tokio::io::AsyncWriteExt;
         let _ = client
-            .write_all(b"GET / HTTP/1.1\r\nHost: local\r\n\r\n")
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .await;
-    }
-
-    let mut bytes = Vec::new();
-
-    if http2 {
-        // For HTTP/2, we still need connection close to know when response is done
-        // TODO: proper HTTP/2 frame parsing
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         let _ = client.shutdown().await;
-        let _ = client.read_to_end(&mut bytes).await;
-    } else {
-        // For HTTP/1.1, parse headers to get Content-Length
-        let mut header_buf = Vec::new();
-        let mut single_byte = [0u8; 1];
-
-        // Read until we find "\r\n\r\n" (end of headers)
-        loop {
-            if client.read_exact(&mut single_byte).await.is_err() {
-                break;
-            }
-            header_buf.push(single_byte[0]);
-
-            if header_buf.len() >= 4 {
-                let len = header_buf.len();
-                if &header_buf[len-4..len] == b"\r\n\r\n" {
-                    break;
-                }
-            }
-        }
-
-        bytes.extend_from_slice(&header_buf);
-
-        // Parse Content-Length from headers
-        let headers_str = String::from_utf8_lossy(&header_buf);
-        let mut content_length = 0;
-
-        for line in headers_str.lines() {
-            if let Some(value) = line.strip_prefix("content-length:") {
-                content_length = value.trim().parse().unwrap_or(0);
-                break;
-            } else if let Some(value) = line.strip_prefix("Content-Length:") {
-                content_length = value.trim().parse().unwrap_or(0);
-                break;
-            }
-        }
-
-        // Read exactly content_length bytes for the body
-        if content_length > 0 {
-            let mut body = vec![0u8; content_length];
-            let _ = client.read_exact(&mut body).await;
-            bytes.extend_from_slice(&body);
-        }
     }
 
-    bytes
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    let _ = handle.await;
+    let result = captured_ref.lock().unwrap().clone();
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_http1_capture() {
+        let response = Response::builder()
+            .status(200)
+            .header("Content-Type", "text/plain")
+            .body(Full::new(Bytes::from("Hello World")))
+            .unwrap();
+
+        let bytes = to_bytes(response, false).await;
+        let output = String::from_utf8_lossy(&bytes);
+
+        println!("HTTP/1.1 Response:\n{}", output);
+        assert!(output.contains("HTTP/1.1 200 OK"));
+        assert!(output.contains("Hello World"));
+    }
+
+    #[tokio::test]
+    async fn test_http2_capture() {
+        let response = Response::builder()
+            .status(200)
+            .header("Content-Type", "text/plain")
+            .body(Full::new(Bytes::from("Hello World")))
+            .unwrap();
+
+        let bytes = to_bytes(response, true).await;
+
+        println!("HTTP/2 Response: {} bytes", bytes.len());
+        // HTTP/2 è binario, quindi verifichiamo solo che ci siano dei dati
+        assert!(bytes.len() > 0);
+        // I primi bytes dovrebbero contenere il connection preface response
+        assert!(bytes.len() > 9); // Almeno SETTINGS frame
+    }
 }
