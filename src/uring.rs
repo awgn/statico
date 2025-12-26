@@ -71,13 +71,19 @@ async fn handle_connection_uring(
     config: Arc<ServerConfig>,
     http2: bool,
 ) -> Result<usize> {
-    // Reuse buffer for reading
-    let mut buf = vec![0u8; 4096];
+    if http2 {
+        use tracing::warn;
+        warn!("HTTP/2 is not supported with io_uring raw TCP");
+        return Err(anyhow::anyhow!("HTTP/2 not supported with io_uring"));
+    }
 
-    // Build response using handle_request and to_bytes
-    let resp = handle_request(config.clone()).await?;
-    let mut response = to_bytes(resp, http2).await;
+    // Simple HTTP/1.1 implementation
+    let mut buf = vec![0u8; 4096];
     let mut requests_served = 0;
+
+    // Build response once (HTTP/1.1 only)
+    let resp = handle_request(config.clone()).await?;
+    let mut response = to_bytes(resp, false).await;
 
     loop {
         // Read HTTP request
@@ -106,6 +112,7 @@ async fn handle_connection_uring(
 
     Ok(requests_served)
 }
+
 
 async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
     let mut builder = Response::builder().status(config.status);
@@ -260,9 +267,7 @@ mod tests {
         let bytes = to_bytes(response, true).await;
 
         println!("HTTP/2 Response: {} bytes", bytes.len());
-        // HTTP/2 è binario, quindi verifichiamo solo che ci siano dei dati
         assert!(bytes.len() > 0);
-        // I primi bytes dovrebbero contenere il connection preface response
-        assert!(bytes.len() > 9); // Almeno SETTINGS frame
+        assert!(bytes.len() > 9);
     }
 }
