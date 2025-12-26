@@ -109,7 +109,7 @@ async fn handle_connection_uring(
                 // Write response
                 let (result, r) = stream.write_all(response).await;
                 response = r; // Get buffer back for next iteration
-                
+
                 if let Err(e) = result {
                     return Err(e.into());
                 }
@@ -123,84 +123,75 @@ async fn handle_connection_uring(
     Ok(requests_served)
 }
 
-/// Find the end of a complete HTTP/1.1 request in the buffer
-fn find_complete_request(buf: &[u8]) -> Option<usize> {
-    // Find end of headers ("\r\n\r\n")
-    let headers_end = find_headers_end(buf)?;
-    
-    // Parse Content-Length directly from bytes (avoid UTF-8 conversion)
-    let content_length = parse_content_length_bytes(&buf[..headers_end]);
-    
-    let body_start = headers_end + 4; // Skip "\r\n\r\n"
-    let request_end = body_start + content_length;
-    
-    // Check if we have the complete request
-    if buf.len() >= request_end {
-        Some(request_end)
-    } else {
-        None
-    }
-}
-
-/// Find the position where headers end ("\r\n\r\n")
+/// Find the end of a complete HTTP/1.1 request in the buffer using a single-pass optimized algorithm.
 #[inline]
-fn find_headers_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|window| window == b"\r\n\r\n")
-}
+pub(crate) fn find_complete_request(buf: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    let mut content_length = 0;
 
-/// Parse Content-Length directly from bytes with single-pass algorithm
-#[inline]
-fn parse_content_length_bytes(headers: &[u8]) -> usize {
-    let content_length_pattern = b"content-length:";
-    let mut i = 0;
-    
-    while i < headers.len() {
-        // Look for start of line (beginning or after \n)
-        if i == 0 || headers[i - 1] == b'\n' {
-            // Check if we have enough bytes left for pattern
-            if i + content_length_pattern.len() < headers.len() {
-                // Case-insensitive comparison for "content-length:"
-                let mut matches = true;
-                for (j, &expected) in content_length_pattern.iter().enumerate() {
-                    let actual = headers[i + j];
-                    // Convert to lowercase for comparison
-                    let actual_lower = if actual.is_ascii_uppercase() {
-                        actual + 32
+    // Iterate looking for the '\n' byte (New Line).
+    // The Rust compiler often optimizes this iterator using vectorization (SIMD).
+    while let Some(offset) = buf[pos..].iter().position(|&b| b == b'\n') {
+        let end_of_line = pos + offset;
+
+        // Extract the line excluding the trailing '\n'
+        let mut line = &buf[pos..end_of_line];
+
+        // Handle optional Carriage Return (\r\n)
+        if let Some(&b'\r') = line.last() {
+            line = &line[..line.len() - 1];
+        }
+
+        // If the line is empty, we found the end of headers (\r\n\r\n)
+        if line.is_empty() {
+            let body_start = end_of_line + 1; // Skip the last \n
+            let request_end = body_start + content_length;
+
+            if buf.len() >= request_end {
+                return Some(request_end);
+            } else {
+                return None; // Incomplete buffer
+            }
+        }
+
+        // "Fail-Fast" optimization:
+        // 1. The line must be at least as long as "content-length:0" (approx 16 bytes)
+        // 2. The first character must be 'c' or 'C' (0x20 is the lowercase mask)
+        if line.len() >= 15 && (line[0] | 0x20) == b'c' {
+            // Fast case-insensitive check using Rust's native SIMD
+            if line[..15].eq_ignore_ascii_case(b"content-length:") {
+                // Manual integer parsing (avoids allocations and UTF-8 checks)
+                // Skip the first 15 characters ("content-length:")
+                let mut value_iter = line[15..].iter();
+
+                // Skip whitespace
+                let mut val_start = value_iter.clone(); // Lightweight clone to "peek"
+                while let Some(&b) = val_start.next() {
+                    if b == b' ' || b == b'\t' {
+                        value_iter.next();
                     } else {
-                        actual
-                    };
-                    
-                    if actual_lower != expected {
-                        matches = false;
                         break;
                     }
                 }
-                
-                if matches {
-                    // Found "content-length:", now parse the value
-                    let mut value_pos = i + content_length_pattern.len();
-                    
-                    // Skip whitespace after ':'
-                    while value_pos < headers.len() && 
-                          (headers[value_pos] == b' ' || headers[value_pos] == b'\t') {
-                        value_pos += 1;
+
+                // Parse digits
+                let mut val = 0;
+                for &b in value_iter {
+                    if b.is_ascii_digit() {
+                        val = val * 10 + (b - b'0') as usize;
+                    } else {
+                        break;
                     }
-                    
-                    // Parse digits
-                    let mut result = 0usize;
-                    while value_pos < headers.len() && headers[value_pos].is_ascii_digit() {
-                        result = result * 10 + (headers[value_pos] - b'0') as usize;
-                        value_pos += 1;
-                    }
-                    
-                    return result;
                 }
+                content_length = val;
             }
         }
-        i += 1;
+
+        // Advance to the next line
+        pos = end_of_line + 1;
     }
-    
-    0 // No Content-Length header found
+
+    None
 }
 
 async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
@@ -356,7 +347,69 @@ mod tests {
         let bytes = to_bytes(response, true).await;
 
         println!("HTTP/2 Response: {} bytes", bytes.len());
+        // HTTP/2 è binario, quindi verifichiamo solo che ci siano dei dati
         assert!(bytes.len() > 0);
-        assert!(bytes.len() > 9);
+        // I primi bytes dovrebbero contenere il connection preface response
+        assert!(bytes.len() > 9); // Almeno SETTINGS frame
+    }
+
+    #[test]
+    fn test_find_complete_request_no_body() {
+        // GET request without body
+        let request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(find_complete_request(request), Some(request.len()));
+    }
+
+    #[test]
+    fn test_find_complete_request_with_body() {
+        // POST request with Content-Length
+        let request = b"POST /api HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhello";
+        assert_eq!(find_complete_request(request), Some(request.len()));
+    }
+
+    #[test]
+    fn test_find_complete_request_incomplete_headers() {
+        // Missing final \r\n\r\n
+        let request = b"GET / HTTP/1.1\r\nHost: localhost\r\n";
+        assert_eq!(find_complete_request(request), None);
+    }
+
+    #[test]
+    fn test_find_complete_request_incomplete_body() {
+        // Headers complete but body incomplete
+        let request = b"POST /api HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nhello";
+        assert_eq!(find_complete_request(request), None); // Only 5 bytes, needs 10
+    }
+
+    #[test]
+    fn test_find_complete_request_multiple_requests() {
+        // Two complete requests in buffer
+        let buffer = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET /api HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let first_request_end = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".len();
+        assert_eq!(find_complete_request(buffer), Some(first_request_end));
+    }
+
+
+
+    #[test]
+    fn test_real_world_scenario() {
+        // Simulate a real POST request with JSON body
+        let body = b"{\"name\":\"John\",\"age\":30}";
+        let content_length = body.len();
+        let request = format!(
+            "POST /api/users HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            content_length,
+            std::str::from_utf8(body).unwrap()
+        );
+        let request_bytes = request.as_bytes();
+        assert_eq!(find_complete_request(request_bytes), Some(request_bytes.len()));
+        
+        // Test partial request (missing some body bytes)
+        let partial = format!(
+            "POST /api/users HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"name\":\"John\"",
+            content_length
+        );
+        let partial_bytes = partial.as_bytes();
+        assert_eq!(find_complete_request(partial_bytes), None);
     }
 }
