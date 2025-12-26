@@ -77,35 +77,45 @@ async fn handle_connection_uring(
         return Err(anyhow::anyhow!("HTTP/2 not supported with io_uring"));
     }
 
-    // Simple HTTP/1.1 implementation
-    let mut buf = vec![0u8; 4096];
+    // Robust HTTP/1.1 implementation with proper request parsing
+    let mut connection_buffer = Vec::new();
+    let mut read_buf = vec![0u8; 4096];
     let mut requests_served = 0;
 
-    // Build response once (HTTP/1.1 only)
+    // Generate response ONCE outside the loop for better performance
     let resp = handle_request(config.clone()).await?;
     let mut response = to_bytes(resp, false).await;
 
     loop {
-        // Read HTTP request
-        let (result, b) = stream.read(buf).await;
-        buf = b; // Get buffer back
+        // Read data from stream
+        let (result, buf) = stream.read(read_buf).await;
+        read_buf = buf;
 
-        let n = match result {
+        let bytes_read = match result {
             Ok(0) => break, // Connection closed normally by client
             Ok(n) => n,
             Err(e) => return Err(e.into()), // Read error
         };
 
-        // Simple check if we got some data
-        if n > 0 {
-            requests_served += 1;
+        if bytes_read > 0 {
+            // Append new data to connection buffer
+            connection_buffer.extend_from_slice(&read_buf[..bytes_read]);
 
-            // Write response
-            let (result, r) = stream.write_all(response).await;
-            response = r; // Get buffer back for next iteration
+            // Process complete HTTP requests from buffer
+            while let Some(request_end) = find_complete_request(&connection_buffer) {
+                requests_served += 1;
 
-            if let Err(e) = result {
-                return Err(e.into()); // Write error
+                // Just consume the request body and send the pre-generated response
+                // Write response
+                let (result, r) = stream.write_all(response).await;
+                response = r; // Get buffer back for next iteration
+                
+                if let Err(e) = result {
+                    return Err(e.into());
+                }
+
+                // Remove processed request from buffer
+                connection_buffer.drain(..request_end);
             }
         }
     }
@@ -113,6 +123,85 @@ async fn handle_connection_uring(
     Ok(requests_served)
 }
 
+/// Find the end of a complete HTTP/1.1 request in the buffer
+fn find_complete_request(buf: &[u8]) -> Option<usize> {
+    // Find end of headers ("\r\n\r\n")
+    let headers_end = find_headers_end(buf)?;
+    
+    // Parse Content-Length directly from bytes (avoid UTF-8 conversion)
+    let content_length = parse_content_length_bytes(&buf[..headers_end]);
+    
+    let body_start = headers_end + 4; // Skip "\r\n\r\n"
+    let request_end = body_start + content_length;
+    
+    // Check if we have the complete request
+    if buf.len() >= request_end {
+        Some(request_end)
+    } else {
+        None
+    }
+}
+
+/// Find the position where headers end ("\r\n\r\n")
+#[inline]
+fn find_headers_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+/// Parse Content-Length directly from bytes with single-pass algorithm
+#[inline]
+fn parse_content_length_bytes(headers: &[u8]) -> usize {
+    let content_length_pattern = b"content-length:";
+    let mut i = 0;
+    
+    while i < headers.len() {
+        // Look for start of line (beginning or after \n)
+        if i == 0 || headers[i - 1] == b'\n' {
+            // Check if we have enough bytes left for pattern
+            if i + content_length_pattern.len() < headers.len() {
+                // Case-insensitive comparison for "content-length:"
+                let mut matches = true;
+                for (j, &expected) in content_length_pattern.iter().enumerate() {
+                    let actual = headers[i + j];
+                    // Convert to lowercase for comparison
+                    let actual_lower = if actual.is_ascii_uppercase() {
+                        actual + 32
+                    } else {
+                        actual
+                    };
+                    
+                    if actual_lower != expected {
+                        matches = false;
+                        break;
+                    }
+                }
+                
+                if matches {
+                    // Found "content-length:", now parse the value
+                    let mut value_pos = i + content_length_pattern.len();
+                    
+                    // Skip whitespace after ':'
+                    while value_pos < headers.len() && 
+                          (headers[value_pos] == b' ' || headers[value_pos] == b'\t') {
+                        value_pos += 1;
+                    }
+                    
+                    // Parse digits
+                    let mut result = 0usize;
+                    while value_pos < headers.len() && headers[value_pos].is_ascii_digit() {
+                        result = result * 10 + (headers[value_pos] - b'0') as usize;
+                        value_pos += 1;
+                    }
+                    
+                    return result;
+                }
+            }
+        }
+        i += 1;
+    }
+    
+    0 // No Content-Length header found
+}
 
 async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
     let mut builder = Response::builder().status(config.status);
