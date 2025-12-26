@@ -1,5 +1,5 @@
 use anyhow::Result;
-use http_body_util::Full;
+use http_body_util::{Empty, Full};
 use hyper::body::Bytes;
 
 use hyper::service::service_fn;
@@ -188,35 +188,39 @@ pub async fn to_bytes(response: Response<Full<Bytes>>, http2: bool) -> Vec<u8> {
         }
     });
 
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri("/")
+        .header("host", "localhost")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
     // Send a request to trigger the response
-    let mut client = client;
     if http2 {
         tokio::spawn(async move {
             let client_connection =
                 hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
                     .handshake(TokioIo::new(client))
-            .await;
+                    .await;
 
             if let Ok((mut sender, connection)) = client_connection {
                 tokio::spawn(connection);
-
-                let req = hyper::Request::builder()
-                    .method("GET")
-                    .uri("/")
-                    .header("host", "localhost")
-                    .body(http_body_util::Empty::<Bytes>::new())
-                    .unwrap();
 
                 let _ = sender.send_request(req).await;
             }
         });
     } else {
-        use tokio::io::AsyncWriteExt;
-        let _ = client
-            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        let _ = client.shutdown().await;
+        tokio::spawn(async move {
+            let client_connection = hyper::client::conn::http1::Builder::new()
+                .handshake(TokioIo::new(client))
+                .await;
+
+            if let Ok((mut sender, connection)) = client_connection {
+                tokio::spawn(connection);
+
+                let _ = sender.send_request(req).await;
+            }
+        });
     }
 
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
