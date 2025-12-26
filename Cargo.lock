@@ -614,12 +614,13 @@ dependencies = [
 
 [[package]]
 name = "statico"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytes",
  "clap",
  "http-body-util",
+ "httparse",
  "hyper",
  "hyper-util",
  "num_cpus",

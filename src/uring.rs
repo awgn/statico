@@ -123,75 +123,50 @@ async fn handle_connection_uring(
     Ok(requests_served)
 }
 
-/// Find the end of a complete HTTP/1.1 request in the buffer using a single-pass optimized algorithm.
-#[inline]
-pub(crate) fn find_complete_request(buf: &[u8]) -> Option<usize> {
-    let mut pos = 0;
-    let mut content_length = 0;
+/// Find the end of a complete HTTP/1.1 request using the `httparse` crate.
+/// This approach uses SIMD optimizations internally and avoids allocations.
+pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
+    // Pre-allocate a fixed-size array of headers on the stack.
+    // 32 headers are usually sufficient for standard requests.
+    // If there are more headers, `httparse` will return a TooManyHeaders error
+    // (mapped to None here), which acts as a safety limit against DoS.
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut req = httparse::Request::new(&mut headers);
 
-    // Iterate looking for the '\n' byte (New Line).
-    // The Rust compiler often optimizes this iterator using vectorization (SIMD).
-    while let Some(offset) = buf[pos..].iter().position(|&b| b == b'\n') {
-        let end_of_line = pos + offset;
+    // Attempt to parse the buffer
+    // `req.parse` returns the number of bytes consumed by the headers (the body offset)
+    match req.parse(buf) {
+        Ok(httparse::Status::Complete(headers_len)) => {
+            let mut content_length = 0;
 
-        // Extract the line excluding the trailing '\n'
-        let mut line = &buf[pos..end_of_line];
+            // Iterate through the parsed headers to find Content-Length
+            for header in req.headers {
+                if header.name.eq_ignore_ascii_case("Content-Length") {
+                    // Parse the byte slice directly to usize.
+                    // Using std::str::from_utf8 + parse is safe and fast enough here,
+                    // as `httparse` validates token structure.
+                    if let Ok(s) = std::str::from_utf8(header.value) {
+                        // trim() handles surrounding whitespace allowed by RFC
+                        if let Ok(val) = s.trim().parse::<usize>() {
+                            content_length = val;
+                            break; // Found it, stop searching
+                        }
+                    }
+                }
+            }
 
-        // Handle optional Carriage Return (\r\n)
-        if let Some(&b'\r') = line.last() {
-            line = &line[..line.len() - 1];
-        }
+            let total_len = headers_len + content_length;
 
-        // If the line is empty, we found the end of headers (\r\n\r\n)
-        if line.is_empty() {
-            let body_start = end_of_line + 1; // Skip the last \n
-            let request_end = body_start + content_length;
-
-            if buf.len() >= request_end {
-                return Some(request_end);
+            // Check if we have the full body in the buffer
+            if buf.len() >= total_len {
+                Some(total_len)
             } else {
-                return None; // Incomplete buffer
+                None // Body is not fully received yet
             }
-        }
-
-        // "Fail-Fast" optimization:
-        // 1. The line must be at least as long as "content-length:0" (approx 16 bytes)
-        // 2. The first character must be 'c' or 'C' (0x20 is the lowercase mask)
-        if line.len() >= 15 && (line[0] | 0x20) == b'c' {
-            // Fast case-insensitive check using Rust's native SIMD
-            if line[..15].eq_ignore_ascii_case(b"content-length:") {
-                // Manual integer parsing (avoids allocations and UTF-8 checks)
-                // Skip the first 15 characters ("content-length:")
-                let mut value_iter = line[15..].iter();
-
-                // Skip whitespace
-                let mut val_start = value_iter.clone(); // Lightweight clone to "peek"
-                while let Some(&b) = val_start.next() {
-                    if b == b' ' || b == b'\t' {
-                        value_iter.next();
-                    } else {
-                        break;
-                    }
-                }
-
-                // Parse digits
-                let mut val = 0;
-                for &b in value_iter {
-                    if b.is_ascii_digit() {
-                        val = val * 10 + (b - b'0') as usize;
-                    } else {
-                        break;
-                    }
-                }
-                content_length = val;
-            }
-        }
-
-        // Advance to the next line
-        pos = end_of_line + 1;
+        },
+        // Returns None if headers are incomplete (Status::Partial) or invalid (Error)
+        _ => None,
     }
-
-    None
 }
 
 async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
