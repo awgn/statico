@@ -2,7 +2,7 @@ mod hyper_srv;
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 mod uring;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use hyper::StatusCode;
@@ -100,6 +100,10 @@ fn main() -> Result<()> {
         let use_uring = false;
 
         let http2_enabled = args.http2;
+
+        if use_uring && http2_enabled {
+            return Err(anyhow!("HTTP/2 is not currenlty supported with io_uring"));
+        }
 
         let handle = thread::spawn(move || {
             if let Err(e) = run_thread(id, addr, config, use_uring, http2_enabled) {

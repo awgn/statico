@@ -1,6 +1,6 @@
 [package]
 name = "statico"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Nicola Bonelli <nicola@larthia.com>"]
 description = "A simple, high-performance HTTP webserver implemented in Rust that serves static responses"

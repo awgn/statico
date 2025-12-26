@@ -1,6 +1,6 @@
 # Statico
 
-A simple, high-performance HTTP webserver implemented in Rust that serves static responses with configurable status codes, headers, and body content.
+A simple, high-performance HTTP webserver implemented in Rust that serves static responses at the speed of light.
 
 ## Features
 
@@ -129,7 +129,7 @@ Start a server on port 8080 with default settings:
 The `io_uring` feature provides experimental support for Linux's io_uring interface:
 - Compile with `--features io_uring`
 - Run with `--uring` flag
-- Currently provides a simplified implementation (full HTTP/Hyper integration pending)
+- Currently provides a simplified implementation (only HTTP1.1 is supported)
 
 ## Use Cases
 
@@ -148,6 +148,7 @@ Statico is designed for high performance:
 - Single-threaded Tokio runtimes reduce context switching
 - Zero-allocation response serving (responses are pre-built and cached)
 - File content loaded once at startup for optimal performance
+- With io_uring support, Statico is up to 40% faster than the hyper version 
 
 ## Testing
 

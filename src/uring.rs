@@ -389,8 +389,6 @@ mod tests {
         assert_eq!(find_complete_request(buffer), Some(first_request_end));
     }
 
-
-
     #[test]
     fn test_real_world_scenario() {
         // Simulate a real POST request with JSON body
@@ -402,8 +400,11 @@ mod tests {
             std::str::from_utf8(body).unwrap()
         );
         let request_bytes = request.as_bytes();
-        assert_eq!(find_complete_request(request_bytes), Some(request_bytes.len()));
-        
+        assert_eq!(
+            find_complete_request(request_bytes),
+            Some(request_bytes.len())
+        );
+
         // Test partial request (missing some body bytes)
         let partial = format!(
             "POST /api/users HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"name\":\"John\"",
