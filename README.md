@@ -1,6 +1,6 @@
 # Statico
 
-A simple, high-performance HTTP webserver implemented in Rust that serves static responses at the speed of light.
+A high-performance HTTP webserver implemented in Rust that serves static responses at the speed of light.
 
 ## Features
 

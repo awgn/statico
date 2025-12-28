@@ -58,10 +58,8 @@ pub fn run_thread(
                     {
                         error!("Error serving HTTP/2 connection: {:?}", err);
                     }
-                } else {
-                    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                        error!("Error serving HTTP/1.1 connection: {:?}", err);
-                    }
+                } else if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                    error!("Error serving HTTP/1.1 connection: {:?}", err);
                 }
             });
         }

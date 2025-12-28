@@ -1,18 +1,9 @@
 use anyhow::Result;
-use http_body_util::{Empty, Full};
+use http_body_util::Full;
 use hyper::body::Bytes;
-
-use hyper::service::service_fn;
-use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
-use std::convert::Infallible;
-use std::io;
+use hyper::Response;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::task::{Context, Poll};
-use tokio::io::{duplex, AsyncRead, AsyncWrite};
 use tracing::error;
 
 use crate::hyper_srv::create_listener;
@@ -71,6 +62,8 @@ async fn handle_connection_uring(
     config: Arc<ServerConfig>,
     http2: bool,
 ) -> Result<usize> {
+    use http_wire::ToWire;
+
     if http2 {
         use tracing::warn;
         warn!("HTTP/2 is not supported with io_uring raw TCP");
@@ -84,7 +77,8 @@ async fn handle_connection_uring(
 
     // Generate response ONCE outside the loop for better performance
     let resp = handle_request(config.clone()).await?;
-    let mut response = to_bytes(resp, false).await;
+    let response = resp.to_bytes().await?;
+    let mut response: Vec<u8> = response.into();
 
     loop {
         // Read data from stream
@@ -163,7 +157,7 @@ pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
             } else {
                 None // Body is not fully received yet
             }
-        },
+        }
         // Returns None if headers are incomplete (Status::Partial) or invalid (Error)
         _ => None,
     }
@@ -178,117 +172,6 @@ async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes
     }
 
     Ok(builder.body(Full::new(config.body.clone()))?)
-}
-
-/// Socket wrapper that captures written bytes while simulating a real connection
-struct CaptureWrapper {
-    inner: tokio::io::DuplexStream,
-    captured: Arc<Mutex<Vec<u8>>>,
-}
-
-impl CaptureWrapper {
-    fn new(inner: tokio::io::DuplexStream) -> Self {
-        Self {
-            inner,
-            captured: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-}
-
-impl AsyncRead for CaptureWrapper {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for CaptureWrapper {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, io::Error>> {
-        // Capture the bytes being written
-        self.captured.lock().unwrap().extend_from_slice(buf);
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), io::Error>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-pub async fn to_bytes(response: Response<Full<Bytes>>, http2: bool) -> Vec<u8> {
-    let (client, server) = duplex(8192);
-    let capture_server = CaptureWrapper::new(server);
-    let captured_ref = capture_server.captured.clone();
-
-    let handle = tokio::spawn(async move {
-        let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
-            let res = response.clone();
-            async move { Ok::<_, Infallible>(res) }
-        });
-
-        if http2 {
-            let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(TokioIo::new(capture_server), service)
-                .await;
-        } else {
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(capture_server), service)
-                .await;
-        }
-    });
-
-    let req = hyper::Request::builder()
-        .method("GET")
-        .uri("/")
-        .header("host", "localhost")
-        .body(Empty::<Bytes>::new())
-        .unwrap();
-
-    // Send a request to trigger the response
-    if http2 {
-        tokio::spawn(async move {
-            let client_connection =
-                hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-                    .handshake(TokioIo::new(client))
-                    .await;
-
-            if let Ok((mut sender, connection)) = client_connection {
-                tokio::spawn(connection);
-
-                let _ = sender.send_request(req).await;
-            }
-        });
-    } else {
-        tokio::spawn(async move {
-            let client_connection = hyper::client::conn::http1::Builder::new()
-                .handshake(TokioIo::new(client))
-                .await;
-
-            if let Ok((mut sender, connection)) = client_connection {
-                tokio::spawn(connection);
-
-                let _ = sender.send_request(req).await;
-            }
-        });
-    }
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    let _ = handle.await;
-    let result = captured_ref.lock().unwrap().clone();
-    result
 }
 
 #[cfg(test)]
