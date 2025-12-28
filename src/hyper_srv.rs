@@ -4,6 +4,7 @@ use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
+use hyper::Version;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -45,23 +46,33 @@ pub fn run_thread(
             let config = config.clone();
 
             // Spawn task to handle the connection
-            tokio::task::spawn(async move {
-                let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
-                    let config = config.clone();
-                    async move { handle_request(config).await }
-                });
 
-                if http2_enabled {
+            if http2_enabled {
+                tokio::task::spawn(async move {
+                    let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
+                        let config = config.clone();
+                        async move { handle_request2(config).await }
+                    });
+
                     if let Err(err) = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection(io, service)
                         .await
                     {
                         error!("Error serving HTTP/2 connection: {:?}", err);
                     }
-                } else if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                    error!("Error serving HTTP/1.1 connection: {:?}", err);
-                }
-            });
+                });
+            } else {
+                tokio::task::spawn(async move {
+                    let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
+                        let config = config.clone();
+                        async move { handle_request(config).await }
+                    });
+
+                    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                        error!("Error serving HTTP/1.1 connection: {:?}", err);
+                    }
+                });
+            }
         }
     })
 }
@@ -69,7 +80,20 @@ pub fn run_thread(
 async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
     let mut builder = Response::builder().status(config.status);
 
-    // Add configured headers
+    // Add configured headers;
+    for (k, v) in &config.headers {
+        builder = builder.header(k, v);
+    }
+
+    Ok(builder.body(Full::new(config.body.clone()))?)
+}
+
+async fn handle_request2(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
+    let mut builder = Response::builder()
+        .status(config.status)
+        .version(Version::HTTP_2);
+
+    // Add configured headers;
     for (k, v) in &config.headers {
         builder = builder.header(k, v);
     }

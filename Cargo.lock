@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "statico"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "bytes",
