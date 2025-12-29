@@ -60,10 +60,6 @@ pub struct Args {
     #[arg(long)]
     pub tcp_nodelay: bool,
 
-    /// Set TCP_QUICKACK option
-    #[arg(long)]
-    pub tcp_quickack: bool,
-
     /// Use io_uring (Linux only)
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     #[arg(long)]

@@ -138,11 +138,6 @@ pub fn create_listener(addr: SocketAddr, args: &Args) -> Result<std::net::TcpLis
         socket.set_tcp_nodelay(true)?;
     }
 
-    // Apply TCP_QUICKACK if requested
-    if args.tcp_quickack {
-        socket.set_tcp_quickack(true)?;
-    }
-
     // Apply receive buffer size if specified
     if let Some(size) = args.receive_buffer_size {
         socket.set_recv_buffer_size(size)?;
