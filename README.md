@@ -34,12 +34,24 @@ cargo build --release --features io_uring
 
 ### Command Line Options
 
-- `-t, --threads <THREADS>`: Number of worker threads to spawn (default: number of CPU cores)
-- `-p, --port <PORT>`: Port to listen on (default: 8080)
-- `-s, --status <STATUS>`: HTTP status code to return (default: 200)
-- `-b, --body <BODY>`: Response body content (optional, default: empty). Use `@filename` to load from file
-- `--header <HEADER>`: Custom headers in "Name: Value" format (can be specified multiple times)
-- `--uring`: Use io_uring runtime (Linux only, requires `io_uring` feature)
+| Option | Description |
+|--------|-------------|
+| `-t, --threads <THREADS>` | Number of worker threads to spawn (default: 12) |
+| `-p, --port <PORT>` | Port to listen on (default: 8080) |
+| `-a, --address <ADDRESS>` | Address to listen on. If not specified, listen on all interfaces |
+| `-s, --status <STATUS>` | HTTP status code to return (default: 200) |
+| `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
+| `--header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
+| `--http2` | Enable HTTP/2 (h2c) support |
+| `--receive-buffer-size <SIZE>` | Receive buffer size |
+| `--send-buffer-size <SIZE>` | Send buffer size |
+| `--listen-backlog <SIZE>` | Listen backlog queue |
+| `--tcp-nodelay` | Set TCP_NODELAY option |
+| `--uring` | Use io_uring (Linux only, requires `io_uring` feature) |
+| `--uring-entries <SIZE>` | Size of the io_uring Submission Queue (SQ) (default: 4096) |
+| `--uring-sqpoll <MS>` | Enable kernel-side submission polling with idle timeout in milliseconds |
+| `-h, --help` | Print help |
+| `-V, --version` | Print version |
 
 ## Examples
 
@@ -127,11 +139,13 @@ Start a server on port 8080 with default settings:
 - **Other Unix systems**: Falls back to `SO_REUSEADDR` (connections handled by one thread)
 - **Windows**: Uses `SO_REUSEADDR`
 
-### io_uring Support
+### io_uring Support (Linux only)
 The `io_uring` feature provides experimental support for Linux's io_uring interface:
 - Compile with `--features io_uring`
 - Run with `--uring` flag
-- Currently provides a simplified implementation (only HTTP1.1 is supported)
+- Configure the submission queue size with `--uring-entries` (default: 4096)
+- Enable kernel-side polling with `--uring-sqpoll <timeout_ms>` 
+- Currently provides a simplified implementation (only HTTP/1.1 is supported)
 
 ## Use Cases
 
