@@ -13,17 +13,11 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::ServerConfig;
+use crate::{Args, ServerConfig};
 
-pub fn run_thread(
-    id: usize,
-    addr: SocketAddr,
-    config: Arc<ServerConfig>,
-    http2_enabled: bool,
-) -> Result<()> {
+pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: &Args) -> Result<()> {
     // Standard Tokio single-thread runtime - create socket with SO_REUSEPORT
-    let std_listener = create_listener(addr)?;
-    std_listener.set_nonblocking(true)?;
+    let std_listener = create_listener(addr, args)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -47,7 +41,7 @@ pub fn run_thread(
 
             // Spawn task to handle the connection
 
-            if http2_enabled {
+            if args.http2 {
                 tokio::task::spawn(async move {
                     let service = service_fn(move |_req: Request<hyper::body::Incoming>| {
                         let config = config.clone();
@@ -116,7 +110,7 @@ pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
     }
 }
 
-pub fn create_listener(addr: SocketAddr) -> Result<std::net::TcpListener> {
+pub fn create_listener(addr: SocketAddr, args: &Args) -> Result<std::net::TcpListener> {
     let domain = if addr.is_ipv6() {
         Domain::IPV6
     } else {
@@ -139,9 +133,31 @@ pub fn create_listener(addr: SocketAddr) -> Result<std::net::TcpListener> {
         socket.set_reuse_address(true)?;
     }
 
-    socket.set_tcp_nodelay(true)?;
+    // Apply TCP_NODELAY if requested
+    if args.tcp_nodelay {
+        socket.set_tcp_nodelay(true)?;
+    }
+
+    // Apply TCP_QUICKACK if requested
+    if args.tcp_quickack {
+        socket.set_tcp_quickack(true)?;
+    }
+
+    // Apply receive buffer size if specified
+    if let Some(size) = args.receive_buffer_size {
+        socket.set_recv_buffer_size(size)?;
+    }
+
+    // Apply send buffer size if specified
+    if let Some(size) = args.send_buffer_size {
+        socket.set_send_buffer_size(size)?;
+    }
+
     socket.bind(&addr.into())?;
-    socket.listen(1024)?;
+    socket.listen(args.listen_backlog.unwrap_or(1024))?;
+
+    // Set nonblocking mode
+    socket.set_nonblocking(true)?;
 
     Ok(socket.into())
 }

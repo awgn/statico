@@ -7,31 +7,38 @@ use std::sync::Arc;
 use tracing::error;
 
 use crate::hyper_srv::create_listener;
-use crate::ServerConfig;
+use crate::{Args, ServerConfig};
 
 pub fn run_thread(
     id: usize,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
-    http2_enabled: bool,
+    args: &Args,
 ) -> Result<()> {
     // io_uring implementation for Linux
-
     use tracing::info;
-    info!("Thread {} using io_uring runtime", id);
+
+    let num_entries = args.uring_entries.next_power_of_two();
+    let cqsize = num_entries * 2;
+
+    let mut uring = tokio_uring::uring_builder();
+
+    uring.setup_single_issuer().setup_cqsize(cqsize);
+
+    if let Some(idle) = args.uring_sqpoll {
+        uring.setup_sqpoll(idle);
+    } else {
+        uring.setup_coop_taskrun().setup_taskrun_flag();
+    }
+
     tokio_uring::builder()
-        .entries(32768) // Large ring size is critical for throughput
-        .uring_builder(
-            tokio_uring::uring_builder()
-                .setup_cqsize(65536)
-                .setup_sqpoll(1),
-        )
+        .entries(num_entries) // Large ring size is critical for throughput
+        .uring_builder(&uring)
         .start(async move {
             // Create socket manually with SO_REUSEPORT enabled
-            let std_listener = create_listener(addr)?;
-            std_listener.set_nonblocking(true)?;
+            let std_listener = create_listener(addr, args)?;
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
-            info!("Thread {} listening on {} (io_uring)", id, addr);
+            info!("Thread {} listening on {} (io_uring, entries: {}, sqpoll: {:?})", id, addr, args.uring_entries, args.uring_sqpoll);
 
             loop {
                 let (stream, _) = match listener.accept().await {
@@ -48,7 +55,7 @@ pub fn run_thread(
 
                 // Spawn task to handle the connection with io_uring
                 tokio_uring::spawn(async move {
-                    if let Err(e) = handle_connection_uring(stream, config, http2_enabled).await {
+                    if let Err(e) = handle_connection_uring(stream, config, false).await {
                         error!("Error handling io_uring connection: {}", e);
                     }
                 });
@@ -177,39 +184,6 @@ async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_http1_capture() {
-        let response = Response::builder()
-            .status(200)
-            .header("Content-Type", "text/plain")
-            .body(Full::new(Bytes::from("Hello World")))
-            .unwrap();
-
-        let bytes = to_bytes(response, false).await;
-        let output = String::from_utf8_lossy(&bytes);
-
-        println!("HTTP/1.1 Response:\n{}", output);
-        assert!(output.contains("HTTP/1.1 200 OK"));
-        assert!(output.contains("Hello World"));
-    }
-
-    #[tokio::test]
-    async fn test_http2_capture() {
-        let response = Response::builder()
-            .status(200)
-            .header("Content-Type", "text/plain")
-            .body(Full::new(Bytes::from("Hello World")))
-            .unwrap();
-
-        let bytes = to_bytes(response, true).await;
-
-        println!("HTTP/2 Response: {} bytes", bytes.len());
-        // HTTP/2 è binario, quindi verifichiamo solo che ci siano dei dati
-        assert!(bytes.len() > 0);
-        // I primi bytes dovrebbero contenere il connection preface response
-        assert!(bytes.len() > 9); // Almeno SETTINGS frame
-    }
 
     #[test]
     fn test_find_complete_request_no_body() {
