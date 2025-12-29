@@ -1,12 +1,14 @@
 # Statico
 
 A high-performance HTTP webserver implemented in Rust that serves static responses at the speed of light.
+Its sole purpose is to handle HTTP requests as fast as possible; as such, it is neither a full-featured 
+HTTP server nor an HTTP router, and it is not intended for production use beyond benchmarking.
 
 ## Features
 
 - **Multi-threaded**: Configurable number of worker threads
-- **SO_REUSEPORT**: Multiple threads can bind to the same port for load balancing 
 - **Single-threaded Tokio runtime per thread**: Each worker thread runs its own Tokio current-thread runtime
+- **SO_REUSEPORT**: Multiple threads can bind to the same port for load balancing 
 - **Configurable responses**: Set custom HTTP status codes, headers, and response body
 - **File-based responses**: Load response body from files using `@filename` syntax
 - **Optional io_uring support**: Experimental support for io_uring on Linux (compile-time feature)
