@@ -63,7 +63,7 @@ pub struct Args {
     /// Use io_uring (Linux only)
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     #[arg(long)]
-    pub uring: bool,
+    pub io_uring: bool,
 
     /// Size of the io_uring Submission Queue (SQ)
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
     info!("Starting server on {} with {} threads", addr, args.threads);
 
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    let use_uring = args.uring;
+    let use_uring = args.io_uring;
     #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
     let use_uring = false;
 

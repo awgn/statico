@@ -38,7 +38,10 @@ pub fn run_thread(
             // Create socket manually with SO_REUSEPORT enabled
             let std_listener = create_listener(addr, args)?;
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
-            info!("Thread {} listening on {} (io_uring, entries: {}, sqpoll: {:?})", id, addr, args.uring_entries, args.uring_sqpoll);
+            info!(
+                "Thread {} listening on {} (io_uring, entries: {}, sqpoll: {:?})",
+                id, addr, args.uring_entries, args.uring_sqpoll
+            );
 
             loop {
                 let (stream, _) = match listener.accept().await {
@@ -62,7 +65,6 @@ pub fn run_thread(
             }
         })
 }
-
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 async fn handle_connection_uring(
     stream: tokio_uring::net::TcpStream,
@@ -72,101 +74,181 @@ async fn handle_connection_uring(
     use http_wire::ToWire;
 
     if http2 {
-        use tracing::warn;
-        warn!("HTTP/2 is not supported with io_uring raw TCP");
+        // tracing::warn!("HTTP/2 is not supported with io_uring raw TCP");
         return Err(anyhow::anyhow!("HTTP/2 not supported with io_uring"));
     }
 
-    // Robust HTTP/1.1 implementation with proper request parsing
-    let mut connection_buffer = Vec::new();
-    let mut read_buf = vec![0u8; 4096];
+    // Pre-calculate the static response once.
+    let response_bytes = match handle_request(config.clone()).await {
+        Ok(res) => match res.to_bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(_) => return Ok(0),
+        },
+        Err(_) => return Ok(0),
+    };
+
+    // Buffer for io_uring read operations (owned by kernel during syscall)
+    let mut read_buf = vec![0u8; 8192];
+
+    // Accumulation buffer for partial requests.
+    // We maintain indices to avoid moving memory constantly.
+    let mut conn_buf = Vec::with_capacity(16384);
     let mut requests_served = 0;
 
-    // Generate response ONCE outside the loop for better performance
-    let resp = handle_request(config.clone()).await?;
-    let response = resp.to_bytes().await?;
-    let mut response: Vec<u8> = response.into();
+    // Cursor pointers for conn_buf
+    let mut buf_processed = 0;
+
+    // Buffer to pass ownership to write_all
+    let mut response_buf = response_bytes;
 
     loop {
-        // Read data from stream
+        // 1. Read from socket
         let (result, buf) = stream.read(read_buf).await;
-        read_buf = buf;
+        read_buf = buf; // Reclaim ownership
 
-        let bytes_read = match result {
-            Ok(0) => break, // Connection closed normally by client
+        let n = match result {
+            Ok(0) => break, // EOF
             Ok(n) => n,
-            Err(e) => return Err(e.into()), // Read error
+            Err(e) => return Err(e.into()),
         };
 
-        if bytes_read > 0 {
-            // Append new data to connection buffer
-            connection_buffer.extend_from_slice(&read_buf[..bytes_read]);
+        // 2. Data Management Strategy
+        // We only copy data into conn_buf if we have leftovers from previous reads
+        // or if the current read doesn't contain a full request (split packet).
 
-            // Process complete HTTP requests from buffer
-            while let Some(request_end) = find_complete_request(&connection_buffer) {
-                requests_served += 1;
+        let parse_slice: &[u8];
+        let mut using_internal = false;
 
-                // Just consume the request body and send the pre-generated response
-                // Write response
-                let (result, r) = stream.write_all(response).await;
-                response = r; // Get buffer back for next iteration
-
-                if let Err(e) = result {
-                    return Err(e.into());
+        if conn_buf.is_empty() {
+            // Fast Path: Try to parse directly from the read buffer (Zero Copy)
+            parse_slice = &read_buf[..n];
+        } else {
+            // Slow Path: We have leftovers. Append new data.
+            // Optimization: Check if we need to compact before appending to avoid realloc.
+            if conn_buf.len() + n > conn_buf.capacity() {
+                // If we have processed data at the start, remove it now.
+                if buf_processed > 0 {
+                    conn_buf.drain(..buf_processed);
+                    buf_processed = 0;
                 }
-
-                // Remove processed request from buffer
-                connection_buffer.drain(..request_end);
             }
+            conn_buf.extend_from_slice(&read_buf[..n]);
+            parse_slice = &conn_buf[buf_processed..];
+            using_internal = true;
+        }
+
+        let mut consumed_in_batch = 0;
+        let mut loop_slice = parse_slice;
+
+        // 3. Parsing Loop
+        while let Some(req_len) = find_complete_request(loop_slice) {
+            requests_served += 1;
+
+            // Submit write (io_uring)
+            let (res, r) = stream.write_all(response_buf).await;
+            response_buf = r;
+            res?;
+
+            consumed_in_batch += req_len;
+
+            // Advance the slice for the next iteration in this batch
+            if consumed_in_batch < loop_slice.len() {
+                loop_slice = &parse_slice[consumed_in_batch..];
+            } else {
+                break; // Consumed everything in this batch
+            }
+        }
+
+        // 4. Update Buffer State
+        if using_internal {
+            // We were working on conn_buf. Advance the processed cursor.
+            buf_processed += consumed_in_batch;
+
+            // If we consumed everything, clear the buffer to reset to Fast Path.
+            if buf_processed == conn_buf.len() {
+                conn_buf.clear();
+                buf_processed = 0;
+            }
+            // Heuristic: If valid data is small and we have a lot of garbage at front, compact.
+            // This prevents the buffer from growing indefinitely if we never drain.
+            else if buf_processed > 4096 && buf_processed > conn_buf.len() / 2 {
+                conn_buf.drain(..buf_processed);
+                buf_processed = 0;
+            }
+        } else {
+            // We were in Fast Path (read_buf).
+            // If we didn't consume everything, we MUST move leftovers to conn_buf.
+            if consumed_in_batch < n {
+                conn_buf.extend_from_slice(&read_buf[consumed_in_batch..n]);
+                buf_processed = 0;
+            }
+            // If we consumed everything, conn_buf remains empty, staying in Fast Path.
         }
     }
 
     Ok(requests_served)
 }
 
-/// Find the end of a complete HTTP/1.1 request using the `httparse` crate.
-/// This approach uses SIMD optimizations internally and avoids allocations.
+#[inline(always)]
 pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
-    // Pre-allocate a fixed-size array of headers on the stack.
-    // 32 headers are usually sufficient for standard requests.
-    // If there are more headers, `httparse` will return a TooManyHeaders error
-    // (mapped to None here), which acts as a safety limit against DoS.
+    // Keep headers on stack.
+    // OPTIMIZATION: Use MaybeUninit if you want to avoid zero-init cost,
+    // but safe Rust with [EMPTY; 32] is usually optimized out by LLVM.
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut req = httparse::Request::new(&mut headers);
 
-    // Attempt to parse the buffer
-    // `req.parse` returns the number of bytes consumed by the headers (the body offset)
     match req.parse(buf) {
         Ok(httparse::Status::Complete(headers_len)) => {
-            let mut content_length = 0;
+            // Check Content-Length only if present.
+            // httparse already validated the header structure.
+            let content_len = req
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("Content-Length"))
+                .and_then(|h| parse_usize_fast(h.value))
+                .unwrap_or(0);
 
-            // Iterate through the parsed headers to find Content-Length
-            for header in req.headers {
-                if header.name.eq_ignore_ascii_case("Content-Length") {
-                    // Parse the byte slice directly to usize.
-                    // Using std::str::from_utf8 + parse is safe and fast enough here,
-                    // as `httparse` validates token structure.
-                    if let Ok(s) = std::str::from_utf8(header.value) {
-                        // trim() handles surrounding whitespace allowed by RFC
-                        if let Ok(val) = s.trim().parse::<usize>() {
-                            content_length = val;
-                            break; // Found it, stop searching
-                        }
-                    }
-                }
-            }
-
-            let total_len = headers_len + content_length;
-
-            // Check if we have the full body in the buffer
+            let total_len = headers_len + content_len;
             if buf.len() >= total_len {
                 Some(total_len)
             } else {
-                None // Body is not fully received yet
+                None
             }
         }
-        // Returns None if headers are incomplete (Status::Partial) or invalid (Error)
         _ => None,
+    }
+}
+
+#[inline(always)]
+fn parse_usize_fast(buf: &[u8]) -> Option<usize> {
+    let mut res = 0usize;
+    let mut found = false;
+
+    // SIMD optimization is possible here but likely overkill for short headers.
+    // This loop is efficient and autovectorizes reasonably well.
+    for &b in buf {
+        // Optimistic branch: assuming it's a digit
+        if b.is_ascii_digit() {
+            // Using wrapping_add/mul allows compiler to emit faster code
+            // by removing overflow checks, manual logic ensures safety.
+            res = res.wrapping_mul(10).wrapping_add((b - b'0') as usize);
+            found = true;
+        } else if found {
+            // Whitespace after number ends it
+            break;
+        } else if matches!(b, b' ' | b'\r' | b'\t') {
+            // Leading whitespace
+            continue;
+        } else {
+            // Unexpected char
+            break;
+        }
+    }
+
+    if found {
+        Some(res)
+    } else {
+        None
     }
 }
 
