@@ -39,8 +39,8 @@ The following benchmark compares Statico against other popular HTTP servers and 
 - **HAProxy**: Same optimizations as nginx — no logging, CPU pinning, in-memory response.
 - **Go net/http**: A minimal HTTP server using Go's standard library, always returning `200 OK`.
 - **Go fasthttp**: Same as net/http but using the high-performance [fasthttp](https://github.com/valyala/fasthttp) library.
-- **Axum**: A Rust web framework example using a single multi-threaded Tokio runtime (1, 2, or 4 worker threads).
-- **actix-web**: A Rust web framework example with configurable thread count (1, 2, or 4 threads).
+- **Axum**: A Rust web framework example using a single multi-threaded Tokio runtime (with 1, 2, or 4 worker threads).
+- **actix-web**: A Rust web framework example with configurable thread count (with 1, 2, or 4 threads).
 
 ### Key observations
 
@@ -49,6 +49,15 @@ The following benchmark compares Statico against other popular HTTP servers and 
 3. **Multi-thread scaling**: Statico with io_uring shows near-linear scaling (2.1x at 2 threads, 4.2x at 4 threads), while nginx and others show diminishing returns.
 4. **Rust frameworks comparison**: Statico outperforms both Axum and actix-web significantly, demonstrating the benefit of its specialized architecture (per-thread Tokio runtimes + SO_REUSEPORT).
 5. **Go comparison**: Even fasthttp, known for its performance, reaches only ~53% of Statico+io_uring throughput at 4 threads.
+
+### Why is Statico fast?
+
+- Minimal request processing overhead
+- Efficient multi-threading with SO_REUSEPORT load balancing
+- Single-threaded Tokio runtimes reduce context switching
+- Zero-allocation response serving (responses are pre-built and cached)
+- File content loaded once at startup for optimal performance
+- Use io_uring, achieving up to 40% better performance than the basic version on Linux
 
 ## Building
 
@@ -191,16 +200,6 @@ The `io_uring` feature provides experimental support for Linux's io_uring interf
 - **Health checks**: Provide simple health check endpoints
 - **Benchmarking**: Test HTTP client performance with minimal server overhead
 - **Development**: Quick HTTP server for development and testing scenarios
-
-## Performance
-
-Statico is designed for high performance:
-- Minimal request processing overhead
-- Efficient multi-threading with SO_REUSEPORT load balancing
-- Single-threaded Tokio runtimes reduce context switching
-- Zero-allocation response serving (responses are pre-built and cached)
-- File content loaded once at startup for optimal performance
-- With io_uring support, Statico is up to 40% faster than the hyper version 
 
 ## Testing
 
