@@ -14,6 +14,42 @@ HTTP server nor an HTTP router, and it is not intended for production use beyond
 - **Optional io_uring support**: Experimental support for io_uring on Linux (compile-time feature)
 - **Cross-platform**: Works on Linux, macOS, Windows, and other Unix-like systems
 
+## Performance
+
+The following benchmark compares Statico against other popular HTTP servers and frameworks in a synthetic scenario where each server returns a minimal static response from memory. All servers were configured for maximum performance (no logging, CPU pinning where applicable, in-memory responses).
+
+![Performance Benchmark](pic/perf.png)
+
+### Benchmark Results (requests/second)
+
+| Server | 1 thread | 2 threads | 4 threads |
+|--------|----------|-----------|-----------|
+| **statico + io_uring** | 270,263 | 593,067 | 1,138,319 |
+| **statico** | 279,842 | 441,117 | 966,248 |
+| nginx (return) | 286,960 | 379,974 | 832,082 |
+| HAProxy | 181,127 | 253,796 | 515,162 |
+| Go net/http | 69,212 | 168,220 | 366,084 |
+| Go fasthttp | 172,359 | 273,395 | 605,603 |
+| Axum (Rust) | 121,680 | 224,712 | 414,640 |
+| actix-web (Rust) | 213,756 | 343,037 | 798,809 |
+
+### Notes on the benchmark setup
+
+- **nginx**: Configured for maximum performance with logging disabled, CPU pinning, and returning a response directly from an in-memory buffer (no disk I/O).
+- **HAProxy**: Same optimizations as nginx — no logging, CPU pinning, in-memory response.
+- **Go net/http**: A minimal HTTP server using Go's standard library, always returning `200 OK`.
+- **Go fasthttp**: Same as net/http but using the high-performance [fasthttp](https://github.com/valyala/fasthttp) library.
+- **Axum**: A Rust web framework example using a single multi-threaded Tokio runtime (1, 2, or 4 worker threads).
+- **actix-web**: A Rust web framework example with configurable thread count (1, 2, or 4 threads).
+
+### Key observations
+
+1. **Statico with io_uring scales exceptionally well** — at 4 threads it achieves over 1.1 million req/s, outperforming all other solutions by a significant margin.
+2. **Single-thread performance**: Standard Statico and nginx perform similarly (~280k req/s), but Statico pulls ahead as thread count increases due to better multi-core scaling.
+3. **Multi-thread scaling**: Statico with io_uring shows near-linear scaling (2.1x at 2 threads, 4.2x at 4 threads), while nginx and others show diminishing returns.
+4. **Rust frameworks comparison**: Statico outperforms both Axum and actix-web significantly, demonstrating the benefit of its specialized architecture (per-thread Tokio runtimes + SO_REUSEPORT).
+5. **Go comparison**: Even fasthttp, known for its performance, reaches only ~53% of Statico+io_uring throughput at 4 threads.
+
 ## Building
 
 ### Standard build:
