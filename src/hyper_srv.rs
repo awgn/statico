@@ -5,7 +5,7 @@ use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
-
+use hyper::header::CONTENT_LENGTH;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -61,6 +61,11 @@ pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: 
                         // Add configured headers
                         for (k, v) in &config.headers {
                             builder = builder.header(k, v);
+                        }
+
+                        // Always add Content-Length
+                        if !config.body.is_empty() {
+                            builder = builder.header(CONTENT_LENGTH, config.body.len());
                         }
 
                         let resp = builder.body(Full::new(config.body.clone()));

@@ -2,6 +2,7 @@ use anyhow::Result;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::Response;
+use hyper::header::CONTENT_LENGTH;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::error;
@@ -79,7 +80,7 @@ async fn handle_connection_uring(
     }
 
     // Pre-calculate the static response once.
-    let response_bytes = match handle_request(config.clone()).await {
+    let response_bytes = match build_response(config.clone()).await {
         Ok(res) => match res.to_bytes().await {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => return Ok(0),
@@ -252,12 +253,16 @@ fn parse_usize_fast(buf: &[u8]) -> Option<usize> {
     }
 }
 
-async fn handle_request(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
+async fn build_response(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
     let mut builder = Response::builder().status(config.status);
 
     // Add configured headers
     for (k, v) in &config.headers {
         builder = builder.header(k, v);
+    }
+
+    if !config.body.is_empty() {
+        builder = builder.header(CONTENT_LENGTH, config.body.len());
     }
 
     Ok(builder.body(Full::new(config.body.clone()))?)
