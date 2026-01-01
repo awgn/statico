@@ -207,20 +207,17 @@ async fn execute_delay(delay: std::time::Duration) {
 #[inline(always)]
 pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
     // Keep headers on stack.
-    // OPTIMIZATION: Use MaybeUninit if you want to avoid zero-init cost,
-    // but safe Rust with [EMPTY; 32] is usually optimized out by LLVM.
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut req = httparse::Request::new(&mut headers);
 
     match req.parse(buf) {
         Ok(httparse::Status::Complete(headers_len)) => {
             // Check Content-Length only if present.
-            // httparse already validated the header structure.
             let content_len = req
                 .headers
                 .iter()
                 .find(|h| h.name.eq_ignore_ascii_case("Content-Length"))
-                .and_then(|h| parse_usize_fast(h.value))
+                .and_then(|h| parse_usize(h.value))
                 .unwrap_or(0);
 
             let total_len = headers_len + content_len;
@@ -234,28 +231,27 @@ pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
     }
 }
 
+/// Fast usize parser (decimal).
 #[inline(always)]
-fn parse_usize_fast(buf: &[u8]) -> Option<usize> {
-    let mut res = 0usize;
+fn parse_usize(buf: &[u8]) -> Option<usize> {
+    let mut res: usize = 0;
     let mut found = false;
 
-    // SIMD optimization is possible here but likely overkill for short headers.
     for &b in buf {
-        // Optimistic branch: assuming it's a digit
         if b.is_ascii_digit() {
-            // Using wrapping_add/mul allows compiler to emit faster code
-            // by removing overflow checks, manual logic ensures safety.
+            // Check for overflow could be added here if needed,
+            // but wrapping is standard for "fast" parsing logic.
             res = res.wrapping_mul(10).wrapping_add((b - b'0') as usize);
             found = true;
         } else if found {
-            // Whitespace after number ends it
+            // We were parsing numbers, now we hit a non-digit: stop.
             break;
-        } else if matches!(b, b' ' | b'\r' | b'\t') {
-            // Leading whitespace
+        } else if b == b' ' || b == b'\t' {
+            // Skip leading whitespace
             continue;
         } else {
-            // Unexpected char
-            break;
+            // Found a non-digit before any digit (e.g., letters)
+            return None;
         }
     }
 

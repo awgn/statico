@@ -1,6 +1,6 @@
 [package]
 name = "statico"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 authors = ["Nicola Bonelli <nicola@larthia.com>"]
 description = "A High-performance HTTP webserver that serves static responses at the speed of light."
