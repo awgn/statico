@@ -6,6 +6,7 @@ mod uring;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
+use humantime::parse_duration;
 use hyper::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -79,6 +80,10 @@ pub struct Args {
     /// Increase verbosity level (can be repeated: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
     pub verbose: u8,
+
+    // Delay before processing next request
+    #[arg(short, long, value_parser = parse_duration)]
+    pub delay: Option<std::time::Duration>,
 }
 
 /// Configuration shared across threads

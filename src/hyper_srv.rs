@@ -2,12 +2,13 @@ use anyhow::{Context, Result};
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Bytes;
+use hyper::header::CONTENT_LENGTH;
 use hyper::server::conn::http1;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
-use hyper::header::CONTENT_LENGTH;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,7 +18,12 @@ use tracing::{error, info, warn};
 use crate::pretty::PrettyPrint;
 use crate::{Args, ServerConfig};
 
-pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: &Args) -> Result<()> {
+pub fn run_thread(
+    id: usize,
+    addr: SocketAddr,
+    config: Arc<ServerConfig>,
+    args: &Args,
+) -> Result<()> {
     // Standard Tokio single-thread runtime - create socket with SO_REUSEPORT
     let std_listener = create_listener(addr, args)?;
 
@@ -42,6 +48,7 @@ pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: 
             let config = config.clone();
             let use_http2 = args.http2;
             let verbose = args.verbose;
+            let delay = args.delay;
 
             // Spawn task to handle the connection
             tokio::task::spawn(async move {
@@ -78,6 +85,11 @@ pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: 
                                 }
                             }
                         }
+
+                        if let Some(delay) = delay {
+                            execute_delay(delay).await;
+                        }
+
                         resp
                     }
                 });
@@ -87,9 +99,7 @@ pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: 
                         .serve_connection(io, service)
                         .await
                 } else {
-                    http1::Builder::new()
-                        .serve_connection(io, service)
-                        .await
+                    http1::Builder::new().serve_connection(io, service).await
                 };
 
                 if let Err(err) = result {
@@ -101,6 +111,12 @@ pub fn run_thread(id: usize, addr: SocketAddr, config: Arc<ServerConfig>, args: 
     })
 }
 
+#[cold]
+async fn execute_delay(delay: std::time::Duration) {
+    fast_sleep(delay).await;
+}
+
+#[inline]
 pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
 where
     B: http_body::Body,
@@ -111,6 +127,7 @@ where
     Ok(Request::from_parts(parts, bytes))
 }
 
+#[inline]
 pub async fn collect_response<B>(res: Response<B>) -> Result<Response<Bytes>, B::Error>
 where
     B: http_body::Body,

@@ -1,6 +1,6 @@
 [package]
 name = "statico"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 authors = ["Nicola Bonelli <nicola@larthia.com>"]
 description = "A High-performance HTTP webserver that serves static responses at the speed of light."
@@ -25,6 +25,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 httparse = "1.10.1"
 http_wire = "0.1.1"
 http-body = "1.0.1"
+pingora-timeout = "0.6.0"
+humantime = "2.3.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-uring = { version = "0.5.0", optional = true }

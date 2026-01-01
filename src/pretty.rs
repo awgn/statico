@@ -1,5 +1,5 @@
-use std::fmt;
 use hyper::{Request, Response};
+use std::fmt;
 
 /// Wrapper for pretty-printing a Request.
 ///
@@ -100,13 +100,18 @@ where
 
 /// Extension trait for convenient pretty-printing of Request and Response.
 pub trait PrettyPrint {
-    type Wrapper<'a> where Self: 'a;
+    type Wrapper<'a>
+    where
+        Self: 'a;
 
     fn pretty(&self) -> Self::Wrapper<'_>;
 }
 
 impl<B> PrettyPrint for Request<B> {
-    type Wrapper<'a> = PrettyRequest<'a, B> where B: 'a;
+    type Wrapper<'a>
+        = PrettyRequest<'a, B>
+    where
+        B: 'a;
 
     fn pretty(&self) -> PrettyRequest<'_, B> {
         PrettyRequest(self)
@@ -114,7 +119,10 @@ impl<B> PrettyPrint for Request<B> {
 }
 
 impl<B> PrettyPrint for Response<B> {
-    type Wrapper<'a> = PrettyResponse<'a, B> where B: 'a;
+    type Wrapper<'a>
+        = PrettyResponse<'a, B>
+    where
+        B: 'a;
 
     fn pretty(&self) -> PrettyResponse<'_, B> {
         PrettyResponse(self)
@@ -124,7 +132,7 @@ impl<B> PrettyPrint for Response<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyper::{Request, Response, StatusCode, Method};
+    use hyper::{Method, Request, Response, StatusCode};
 
     #[test]
     fn test_request_normal_format() {

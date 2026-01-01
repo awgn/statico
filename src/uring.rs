@@ -1,10 +1,12 @@
 use anyhow::Result;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::Response;
 use hyper::header::CONTENT_LENGTH;
+use hyper::Response;
+use pingora_timeout::fast_timeout::fast_sleep;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::error;
 
 use crate::hyper_srv::create_listener;
@@ -21,6 +23,7 @@ pub fn run_thread(
 
     let num_entries = args.uring_entries.next_power_of_two();
     let cqsize = num_entries * 2;
+    let delay = args.delay;
 
     let mut uring = tokio_uring::uring_builder();
 
@@ -59,18 +62,20 @@ pub fn run_thread(
 
                 // Spawn task to handle the connection with io_uring
                 tokio_uring::spawn(async move {
-                    if let Err(e) = handle_connection_uring(stream, config, false).await {
+                    if let Err(e) = handle_connection_uring(stream, config, false, delay).await {
                         error!("Error handling io_uring connection: {}", e);
                     }
                 });
             }
         })
 }
+
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 async fn handle_connection_uring(
     stream: tokio_uring::net::TcpStream,
     config: Arc<ServerConfig>,
     http2: bool,
+    delay: Option<Duration>,
 ) -> Result<usize> {
     use http_wire::ToWire;
 
@@ -145,6 +150,10 @@ async fn handle_connection_uring(
         while let Some(req_len) = find_complete_request(loop_slice) {
             requests_served += 1;
 
+            if let Some(delay) = delay {
+                execute_delay(delay).await;
+            }
+
             // Submit write (io_uring)
             let (res, r) = stream.write_all(response_buf).await;
             response_buf = r;
@@ -190,6 +199,11 @@ async fn handle_connection_uring(
     Ok(requests_served)
 }
 
+#[cold]
+async fn execute_delay(delay: std::time::Duration) {
+    fast_sleep(delay).await;
+}
+
 #[inline(always)]
 pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
     // Keep headers on stack.
@@ -226,7 +240,6 @@ fn parse_usize_fast(buf: &[u8]) -> Option<usize> {
     let mut found = false;
 
     // SIMD optimization is possible here but likely overkill for short headers.
-    // This loop is efficient and autovectorizes reasonably well.
     for &b in buf {
         // Optimistic branch: assuming it's a digit
         if b.is_ascii_digit() {
