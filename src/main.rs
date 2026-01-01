@@ -1,4 +1,5 @@
 mod hyper_srv;
+mod pretty;
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 mod uring;
 
@@ -74,6 +75,10 @@ pub struct Args {
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     #[arg(long)]
     pub uring_sqpoll: Option<u32>,
+
+    /// Increase verbosity level (can be repeated: -v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
+    pub verbose: u8,
 }
 
 /// Configuration shared across threads
@@ -135,7 +140,7 @@ fn main() -> Result<()> {
     let use_uring = false;
 
     if use_uring && args.http2 {
-        return Err(anyhow!("HTTP/2 is not currenlty supported with io_uring"));
+        return Err(anyhow!("HTTP/2 is not currently supported with io_uring"));
     }
 
     let args = Arc::new(args);

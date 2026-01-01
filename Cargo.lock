@@ -685,6 +685,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "clap",
+ "http-body",
  "http-body-util",
  "http_wire",
  "httparse",
