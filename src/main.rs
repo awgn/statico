@@ -81,7 +81,7 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
     pub verbose: u8,
 
-    // Delay before processing next request
+    /// Delay before sending the response (e.g., 100ms, 1s, 500us)
     #[arg(short, long, value_parser = parse_duration)]
     pub delay: Option<std::time::Duration>,
 }

@@ -1,6 +1,6 @@
 [package]
 name = "statico"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 authors = ["Nicola Bonelli <nicola@larthia.com>"]
 description = "A High-performance HTTP webserver that serves static responses at the speed of light."
@@ -12,14 +12,14 @@ categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-hyper = { version = "1.0", features = ["full"] }
+hyper = { version = "1.8", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 http-body-util = "0.1"
-bytes = "1.0"
+bytes = "1.11"
 socket2 = { version = "0.6", features = ["all"] }
 anyhow = "1.0"
-num_cpus = "1.0"
+num_cpus = "1.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 httparse = "1.10.1"

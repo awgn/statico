@@ -81,18 +81,20 @@ cargo build --release --features io_uring
 
 | Option | Description |
 |--------|-------------|
-| `-t, --threads <THREADS>` | Number of worker threads to spawn (default: 12) |
+| `-t, --threads <THREADS>` | Number of worker threads to spawn (default: number of CPUs) |
 | `-p, --port <PORT>` | Port to listen on (default: 8080) |
 | `-a, --address <ADDRESS>` | Address to listen on. If not specified, listen on all interfaces |
 | `-s, --status <STATUS>` | HTTP status code to return (default: 200) |
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
+| `-d, --delay <DELAY>` | Delay before sending the response (e.g., `100ms`, `1s`, `500us`) |
+| `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`) |
 | `--header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
 | `--http2` | Enable HTTP/2 (h2c) support |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
 | `--tcp-nodelay` | Set TCP_NODELAY option |
-| `--uring` | Use io_uring (Linux only, requires `io_uring` feature) |
+| `--io-uring` | Use io_uring (Linux only, requires `io_uring` feature) |
 | `--uring-entries <SIZE>` | Size of the io_uring Submission Queue (SQ) (default: 4096) |
 | `--uring-sqpoll <MS>` | Enable kernel-side submission polling with idle timeout in milliseconds |
 | `-h, --help` | Print help |
@@ -150,7 +152,25 @@ Start a server on port 8080 with default settings:
 ### With io_uring (Linux only)
 ```bash
 # Requires compilation with --features io_uring
-./target/release/statico --uring --threads 8
+./target/release/statico --io-uring --threads 8
+```
+
+### With response delay (latency simulation)
+```bash
+# Add 100ms delay before each response
+./target/release/statico --delay 100ms --body "Delayed response"
+
+# Add 1 second delay
+./target/release/statico --delay 1s
+```
+
+### Verbose mode (request/response logging)
+```bash
+# Show request headers
+./target/release/statico -v
+
+# Show request headers and body
+./target/release/statico -vv
 ```
 
 ### Serve content from files
