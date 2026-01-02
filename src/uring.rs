@@ -77,7 +77,7 @@ async fn handle_connection_uring(
     http2: bool,
     delay: Option<Duration>,
 ) -> Result<usize> {
-    use http_wire::ToWire;
+    use http_wire::{WireDecode, WireEncode};
 
     if http2 {
         // tracing::warn!("HTTP/2 is not supported with io_uring raw TCP");
@@ -86,7 +86,7 @@ async fn handle_connection_uring(
 
     // Pre-calculate the static response once.
     let response_bytes = match build_response(config.clone()).await {
-        Ok(res) => match res.to_bytes().await {
+        Ok(res) => match res.encode().await {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => return Ok(0),
         },
@@ -147,7 +147,7 @@ async fn handle_connection_uring(
         let mut loop_slice = parse_slice;
 
         // 3. Parsing Loop
-        while let Some(req_len) = find_complete_request(loop_slice) {
+        while let Some(req_len) = http_wire::request::RequestLength::decode(loop_slice) {
             requests_served += 1;
 
             if let Some(delay) = delay {
@@ -202,64 +202,6 @@ async fn handle_connection_uring(
 #[cold]
 async fn execute_delay(delay: std::time::Duration) {
     fast_sleep(delay).await;
-}
-
-#[inline(always)]
-pub fn find_complete_request(buf: &[u8]) -> Option<usize> {
-    // Keep headers on stack.
-    let mut headers = [httparse::EMPTY_HEADER; 32];
-    let mut req = httparse::Request::new(&mut headers);
-
-    match req.parse(buf) {
-        Ok(httparse::Status::Complete(headers_len)) => {
-            // Check Content-Length only if present.
-            let content_len = req
-                .headers
-                .iter()
-                .find(|h| h.name.eq_ignore_ascii_case("Content-Length"))
-                .and_then(|h| parse_usize(h.value))
-                .unwrap_or(0);
-
-            let total_len = headers_len + content_len;
-            if buf.len() >= total_len {
-                Some(total_len)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Fast usize parser (decimal).
-#[inline(always)]
-fn parse_usize(buf: &[u8]) -> Option<usize> {
-    let mut res: usize = 0;
-    let mut found = false;
-
-    for &b in buf {
-        if b.is_ascii_digit() {
-            // Check for overflow could be added here if needed,
-            // but wrapping is standard for "fast" parsing logic.
-            res = res.wrapping_mul(10).wrapping_add((b - b'0') as usize);
-            found = true;
-        } else if found {
-            // We were parsing numbers, now we hit a non-digit: stop.
-            break;
-        } else if b == b' ' || b == b'\t' {
-            // Skip leading whitespace
-            continue;
-        } else {
-            // Found a non-digit before any digit (e.g., letters)
-            return None;
-        }
-    }
-
-    if found {
-        Some(res)
-    } else {
-        None
-    }
 }
 
 async fn build_response(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
