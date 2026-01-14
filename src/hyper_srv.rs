@@ -16,6 +16,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+use crate::http::{request_head_size, response_head_size};
+use crate::REQUESTS;
+use crate::REQUEST_BYTES;
+use crate::RESPONSES;
+use crate::RESPONSE_BYTES;
+
 use crate::pretty::PrettyPrint;
 use crate::{Args, ServerConfig};
 
@@ -50,12 +56,24 @@ pub fn run_thread(
             let use_http2 = args.http2;
             let verbose = args.verbose;
             let delay = args.delay;
+            let meter = args.meter;
 
             // Spawn task to handle the connection
             tokio::task::spawn(async move {
                 let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                     let config = config.clone();
                     async move {
+                        if meter {
+                            REQUESTS.add(1);
+                            let head_size = request_head_size(&req);
+                            let body_size = req.headers()
+                                .get(CONTENT_LENGTH)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(0);
+                            REQUEST_BYTES.add(head_size + body_size);
+                        }
+
                         if verbose > 0 {
                             if let Ok(req) = collect_request(req).await {
                                 println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
@@ -75,6 +93,11 @@ pub fn run_thread(
 
                         let resp = builder.body(Full::new(config.body.clone()));
                         if let Ok(ref resp) = resp {
+                            if meter {
+                                RESPONSES.add(1);
+                                let head_size = response_head_size(resp);
+                                RESPONSE_BYTES.add(head_size + config.body.len());
+                            }
                             if verbose > 0 {
                                 let resp = collect_response(resp.clone()).await.unwrap();
                                 println!("↪ {}:\n{}", "response".bold(), resp.pretty(verbose));

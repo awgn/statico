@@ -1,19 +1,25 @@
+mod http;
 mod hyper_srv;
 mod pretty;
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 mod uring;
 
+use crate::hyper_srv::load_body_content;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
+use contatori::counters::monotone::Monotone;
+use contatori::counters::{CounterValue, Observable};
 use humantime::parse_duration;
 use hyper::StatusCode;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::hyper_srv::load_body_content;
+static RUNNING: AtomicBool = AtomicBool::new(true);
 
 #[derive(Parser, Clone, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -77,6 +83,10 @@ pub struct Args {
     #[arg(long)]
     pub uring_sqpoll: Option<u32>,
 
+    /// Enable meter
+    #[arg(long)]
+    pub meter: bool,
+
     /// Increase verbosity level (can be repeated: -v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
     pub verbose: u8,
@@ -93,6 +103,11 @@ pub struct ServerConfig {
     pub body: Bytes,
     pub headers: Vec<(String, String)>,
 }
+
+pub static REQUESTS: Monotone = Monotone::new();
+pub static REQUEST_BYTES: Monotone = Monotone::new();
+pub static RESPONSES: Monotone = Monotone::new();
+pub static RESPONSE_BYTES: Monotone = Monotone::new();
 
 fn main() -> Result<()> {
     // Initialize tracing subscriber
@@ -149,6 +164,19 @@ fn main() -> Result<()> {
     }
 
     let args = Arc::new(args);
+
+    let meter_enabled = args.meter;
+
+    // Set up ctrlc handler to print final report
+    ctrlc::set_handler(move || {
+        RUNNING.store(false, Ordering::SeqCst);
+        if meter_enabled {
+            print_final_report();
+        }
+        std::process::exit(0);
+    })
+    .expect("Error setting Ctrl-C handler");
+
     let mut handles = Vec::new();
 
     for id in 0..args.threads {
@@ -163,12 +191,76 @@ fn main() -> Result<()> {
         handles.push(handle);
     }
 
+    if args.meter {
+        let handle = thread::spawn(move || {
+            let (mut prev_req, mut prev_req_bytes, mut prev_res, mut prev_res_bytes) =
+                read_counters();
+            while RUNNING.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(1));
+                if !RUNNING.load(Ordering::SeqCst) {
+                    break;
+                }
+                let (req, req_bytes, res, res_bytes) = read_counters();
+
+                let req_per_sec = req - prev_req;
+                let req_bytes_per_sec = req_bytes - prev_req_bytes;
+                let res_per_sec = res - prev_res;
+                let res_bytes_per_sec = res_bytes - prev_res_bytes;
+
+                // Convert bytes/sec to Gbps (bytes * 8 / 1_000_000_000)
+                let req_gbps = (req_bytes_per_sec.as_f64() * 8.0) / 1_000_000_000.0;
+                let res_gbps = (res_bytes_per_sec.as_f64() * 8.0) / 1_000_000_000.0;
+
+                println!(
+                    "req/s: {}, req: {:.3} Gbps, res/s: {}, res: {:.3} Gbps",
+                    req_per_sec, req_gbps, res_per_sec, res_gbps
+                );
+                prev_req = req;
+                prev_req_bytes = req_bytes;
+                prev_res = res;
+                prev_res_bytes = res_bytes;
+            }
+        });
+        handles.push(handle);
+    }
+
     // Wait for all threads to complete (they run forever unless error)
     for handle in handles {
         handle.join().unwrap();
     }
 
     Ok(())
+}
+
+#[inline]
+fn read_counters() -> (CounterValue, CounterValue, CounterValue, CounterValue) {
+    (
+        REQUESTS.value(),
+        REQUEST_BYTES.value(),
+        RESPONSES.value(),
+        RESPONSE_BYTES.value(),
+    )
+}
+
+fn print_final_report() {
+    let (req, req_bytes, res, res_bytes) = read_counters();
+
+    // Convert bytes to human-readable format
+    let req_bytes_val = req_bytes.as_u64();
+    let res_bytes_val = res_bytes.as_u64();
+
+    println!("Total requests:  {}", req);
+    println!(
+        "Total req bytes: {} ({:.3} GB)",
+        req_bytes,
+        req_bytes_val as f64 / 1_000_000_000.0
+    );
+    println!("Total responses: {}", res);
+    println!(
+        "Total res bytes: {} ({:.3} GB)",
+        res_bytes,
+        res_bytes_val as f64 / 1_000_000_000.0
+    );
 }
 
 fn run_thread(
