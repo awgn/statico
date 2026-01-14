@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::header::CONTENT_LENGTH;
+use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::server::conn::http1;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
@@ -63,19 +63,44 @@ pub fn run_thread(
                 let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                     let config = config.clone();
                     async move {
+                        let (head_size, is_chunked) = if meter {
+                            let hs = request_head_size(&req);
+                            let chunked = req
+                                .headers()
+                                .get(TRANSFER_ENCODING)
+                                .and_then(|v| v.to_str().ok())
+                                .map(|s| s.contains("chunked"))
+                                .unwrap_or(false);
+                            (hs, chunked)
+                        } else {
+                            (0, false)
+                        };
+
+                        // Collect request body if metering or verbose mode is enabled
+                        let collected_req = if meter || verbose > 0 {
+                            collect_request(req).await.ok()
+                        } else {
+                            None
+                        };
+
                         if meter {
                             REQUESTS.add(1);
-                            let head_size = request_head_size(&req);
-                            let body_size = req.headers()
-                                .get(CONTENT_LENGTH)
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(|s| s.parse::<usize>().ok())
-                                .unwrap_or(0);
-                            REQUEST_BYTES.add(head_size + body_size);
+                            if let Some(ref req) = collected_req {
+                                let body_bytes = req.body().len();
+                                // For chunked encoding, calculate the wire format overhead
+                                let body_size = if is_chunked {
+                                    chunked_body_wire_size(body_bytes)
+                                } else {
+                                    body_bytes
+                                };
+                                REQUEST_BYTES.add(head_size + body_size);
+                            } else {
+                                REQUEST_BYTES.add(head_size);
+                            }
                         }
 
                         if verbose > 0 {
-                            if let Ok(req) = collect_request(req).await {
+                            if let Some(ref req) = collected_req {
                                 println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
                             }
                         }
@@ -95,7 +120,7 @@ pub fn run_thread(
                         if let Ok(ref resp) = resp {
                             if meter {
                                 RESPONSES.add(1);
-                                let head_size = response_head_size(resp);
+                                let head_size = response_head_size(resp, config.body.len());
                                 RESPONSE_BYTES.add(head_size + config.body.len());
                             }
                             if verbose > 0 {
@@ -143,6 +168,57 @@ where
     let collected = body.collect().await?;
     let bytes = collected.to_bytes();
     Ok(Request::from_parts(parts, bytes))
+}
+
+/// Calculate the wire size of a chunked body given the decoded body size.
+///
+/// Chunked encoding format for a single chunk:
+/// <size in hex>\r\n<data>\r\n
+/// Plus the terminating chunk: 0\r\n\r\n
+///
+/// For simplicity, we assume the body is sent as a single chunk.
+fn chunked_body_wire_size(body_len: usize) -> usize {
+    if body_len == 0 {
+        // Just the terminating chunk: "0\r\n\r\n"
+        5
+    } else {
+        // Calculate hex digits needed for the size
+        let hex_digits = format!("{:x}", body_len).len();
+        // <hex_size>\r\n<body>\r\n + terminating "0\r\n\r\n"
+        hex_digits + 2 + body_len + 2 + 5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunked_body_wire_size_empty() {
+        // Empty body: just "0\r\n\r\n"
+        assert_eq!(chunked_body_wire_size(0), 5);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_small() {
+        // Body "1234" (4 bytes):
+        // "4\r\n" (3) + "1234\r\n" (6) + "0\r\n\r\n" (5) = 14
+        assert_eq!(chunked_body_wire_size(4), 14);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_two_hex_digits() {
+        // Body of 16 bytes (hex "10"):
+        // "10\r\n" (4) + <16 bytes>\r\n (18) + "0\r\n\r\n" (5) = 27
+        assert_eq!(chunked_body_wire_size(16), 27);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_large() {
+        // Body of 4096 bytes (hex "1000"):
+        // "1000\r\n" (6) + <4096 bytes>\r\n (4098) + "0\r\n\r\n" (5) = 4109
+        assert_eq!(chunked_body_wire_size(4096), 4109);
+    }
 }
 
 #[inline]

@@ -8,6 +8,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
+use crate::REQUESTS;
+use crate::REQUEST_BYTES;
+use crate::RESPONSES;
+use crate::RESPONSE_BYTES;
 
 use crate::hyper_srv::create_listener;
 use crate::{Args, ServerConfig};
@@ -34,6 +38,8 @@ pub fn run_thread(
     } else {
         uring.setup_coop_taskrun().setup_taskrun_flag();
     }
+
+    let meter = args.meter;
 
     tokio_uring::builder()
         .entries(num_entries) // Large ring size is critical for throughput
@@ -62,7 +68,7 @@ pub fn run_thread(
 
                 // Spawn task to handle the connection with io_uring
                 tokio_uring::spawn(async move {
-                    if let Err(e) = handle_connection_uring(stream, config, false, delay).await {
+                    if let Err(e) = handle_connection_uring(stream, config, false, meter, delay).await {
                         error!("Error handling io_uring connection: {}", e);
                     }
                 });
@@ -75,6 +81,7 @@ async fn handle_connection_uring(
     stream: tokio_uring::net::TcpStream,
     config: Arc<ServerConfig>,
     http2: bool,
+    meter: bool,
     delay: Option<Duration>,
 ) -> Result<usize> {
     use http_wire::{WireDecode, WireEncode};
@@ -149,6 +156,12 @@ async fn handle_connection_uring(
         // 3. Parsing Loop
         while let Some(req_len) = http_wire::request::RequestLength::decode(loop_slice) {
             requests_served += 1;
+            if meter {
+                REQUESTS.add(1);
+                REQUEST_BYTES.add(req_len);
+                RESPONSES.add(1);
+                RESPONSE_BYTES.add(response_buf.len());
+            }
 
             if let Some(delay) = delay {
                 execute_delay(delay).await;
