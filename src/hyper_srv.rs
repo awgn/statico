@@ -8,6 +8,7 @@ use hyper::server::conn::http2;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use owo_colors::OwoColorize;
 use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
@@ -55,13 +56,8 @@ pub fn run_thread(
                 let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                     let config = config.clone();
                     async move {
-                        if verbose > 0 {
-                            if let Ok(req) = collect_request(req).await {
-                                match verbose {
-                                    1 => println!("↩ request:\n{}", req.pretty()),
-                                    _ => println!("↩ request:\n{:#}", req.pretty()),
-                                }
-                            }
+                        if let Ok(req) = collect_request(req).await {
+                            println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
                         }
                         let mut builder = Response::builder().status(config.status);
 
@@ -77,13 +73,8 @@ pub fn run_thread(
 
                         let resp = builder.body(Full::new(config.body.clone()));
                         if let Ok(ref resp) = resp {
-                            if verbose > 0 {
-                                let Ok(ref resp) = collect_response(resp.clone()).await;
-                                match verbose {
-                                    1 => println!("↪ response:\n{}", resp.pretty()),
-                                    _ => println!("↪ response:\n{:#}", resp.pretty()),
-                                }
-                            }
+                            let resp = collect_response(resp.clone()).await.unwrap();
+                            println!("↪ {}:\n{}", "response".bold(),resp.pretty(verbose));
                         }
 
                         if let Some(delay) = delay {

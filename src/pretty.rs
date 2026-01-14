@@ -1,17 +1,14 @@
 use hyper::{Request, Response};
+use owo_colors::OwoColorize;
 use std::fmt;
 
 /// Wrapper for pretty-printing a Request.
 ///
-/// - Normal format `{}`: prints method, URI, version, and headers (no body)
-/// - Alternate format `{:#}`: prints everything including the body
-pub struct PrettyRequest<'a, B>(pub &'a Request<B>);
+pub struct PrettyRequest<'a, B>(pub (&'a Request<B>, u8));
 
 /// Wrapper for pretty-printing a Response.
 ///
-/// - Normal format `{}`: prints status, version, and headers (no body)
-/// - Alternate format `{:#}`: prints everything including the body
-pub struct PrettyResponse<'a, B>(pub &'a Response<B>);
+pub struct PrettyResponse<'a, B>(pub (&'a Response<B>, u8));
 
 /// Trait to check if a body is empty
 pub trait IsEmpty {
@@ -53,18 +50,21 @@ where
     B: fmt::Debug + IsEmpty,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let req = self.0;
+        let req = self.0 .0;
+        let verb = self.0 .1;
 
         // Request line
-        writeln!(f, "{} {} {:?}", req.method(), req.uri(), req.version())?;
+        writeln!(f, "{} {} {:?}", req.method().bold().blue(), req.uri(), req.version())?;
 
         // Headers
-        for (name, value) in req.headers() {
-            writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
+        if verb > 0 {
+            for (name, value) in req.headers() {
+                writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
+            }
         }
 
         // Body (only in alternate/verbose mode, and only if not empty)
-        if f.alternate() && !req.body().is_empty() {
+        if verb > 1 && !req.body().is_empty() {
             writeln!(f)?;
             writeln!(f, "{:?}", req.body())?;
         }
@@ -78,18 +78,21 @@ where
     B: fmt::Debug + IsEmpty,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let res = self.0;
+        let res = self.0 .0;
+        let verb = self.0 .1;
 
         // Status line
         writeln!(f, "{:?} {}", res.version(), res.status())?;
 
         // Headers
-        for (name, value) in res.headers() {
-            writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
+        if verb > 0 {
+            for (name, value) in res.headers() {
+                writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
+            }
         }
 
         // Body (only in alternate/verbose mode, and only if not empty)
-        if f.alternate() && !res.body().is_empty() {
+        if verb > 1 && !res.body().is_empty() {
             writeln!(f)?;
             writeln!(f, "{:?}", res.body())?;
         }
@@ -104,7 +107,7 @@ pub trait PrettyPrint {
     where
         Self: 'a;
 
-    fn pretty(&self) -> Self::Wrapper<'_>;
+    fn pretty(&self, verbose: u8) -> Self::Wrapper<'_>;
 }
 
 impl<B> PrettyPrint for Request<B> {
@@ -113,8 +116,8 @@ impl<B> PrettyPrint for Request<B> {
     where
         B: 'a;
 
-    fn pretty(&self) -> PrettyRequest<'_, B> {
-        PrettyRequest(self)
+    fn pretty(&self, verbose: u8) -> PrettyRequest<'_, B> {
+        PrettyRequest((self, verbose))
     }
 }
 
@@ -124,10 +127,11 @@ impl<B> PrettyPrint for Response<B> {
     where
         B: 'a;
 
-    fn pretty(&self) -> PrettyResponse<'_, B> {
-        PrettyResponse(self)
+    fn pretty(&self, verbose: u8) -> PrettyResponse<'_, B> {
+        PrettyResponse((self, verbose))
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -144,12 +148,12 @@ mod tests {
             .body("test body")
             .unwrap();
 
-        let output = format!("{}", req.pretty());
+        let output = format!("{}", req.pretty(1));
 
         assert!(output.contains("GET /test"));
         assert!(output.contains("host: localhost"));
         assert!(output.contains("content-type: application/json"));
-        // Body should NOT be present in normal format
+        // Body should NOT be present in normal format (verb=1)
         assert!(!output.contains("test body"));
     }
 
@@ -162,7 +166,7 @@ mod tests {
             .body("request body content")
             .unwrap();
 
-        let output = format!("{:#}", req.pretty());
+        let output = format!("{}", req.pretty(2));
 
         assert!(output.contains("POST /api/data"));
         assert!(output.contains("content-type: text/plain"));
@@ -178,11 +182,11 @@ mod tests {
             .body("response body")
             .unwrap();
 
-        let output = format!("{}", res.pretty());
+        let output = format!("{}", res.pretty(1));
 
         assert!(output.contains("200 OK"));
         assert!(output.contains("content-type: text/html"));
-        // Body should NOT be present
+        // Body should NOT be present (verb=1)
         assert!(!output.contains("response body"));
     }
 
@@ -194,7 +198,7 @@ mod tests {
             .body("not found body")
             .unwrap();
 
-        let output = format!("{:#}", res.pretty());
+        let output = format!("{:#}", res.pretty(2));
 
         assert!(output.contains("404 Not Found"));
         assert!(output.contains("x-custom: value"));
@@ -210,7 +214,7 @@ mod tests {
             .body("")
             .unwrap();
 
-        let output = format!("{:#}", req.pretty());
+        let output = format!("{:#}",&req.pretty(2));
 
         // Should contain request line and no extra blank line for body
         assert!(output.contains("GET /test"));
@@ -227,7 +231,7 @@ mod tests {
             .body("")
             .unwrap();
 
-        let output = format!("{:#}", res.pretty());
+        let output = format!("{:#}", res.pretty(2));
 
         assert!(output.contains("204 No Content"));
         // No body section should be present
