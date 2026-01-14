@@ -438,9 +438,9 @@ dependencies = [
 
 [[package]]
 name = "http_wire"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05e4779bd8762bdc09c784db4eae5bf0a7c287a5590cce9fd8e853241a173b9a"
+checksum = "69fee6441f0292656529561e94d328dc71db2c099d9d1c336312f413e66d4da5"
 dependencies = [
  "bytes",
  "futures",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "statico"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
