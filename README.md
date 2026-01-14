@@ -165,13 +165,71 @@ Start a server on port 8080 with default settings:
 ```
 
 ### Verbose mode (request/response logging)
+
+The `-v` flag controls verbosity level. Each additional `v` increases the detail:
+
+| Level | Flag | Description |
+|-------|------|-------------|
+| 0 | (none) | No output |
+| 1 | `-v` | Request/status line only |
+| 2 | `-vv` | Request/status line + headers |
+| 3 | `-vvv` | Request/status line + headers + body (non-printable as hex) |
+| 4+ | `-vvvv` | Request/status line + headers + body (full hexdump) |
+
+When displaying the body, printable ASCII characters are shown as-is, while non-printable bytes are displayed as reversed hex codes.
+
 ```bash
-# Show request headers
+# No request/response output
+./target/release/statico
+
+# Show request/status line only
 ./target/release/statico -v
 
-# Show request headers and body
+# Show request/status line + headers
 ./target/release/statico -vv
+
+# Show request/status line + headers + body (non-printable as hex)
+./target/release/statico -vvv
+
+# Show request/status line + headers + body (full hexdump)
+./target/release/statico -vvvv
 ```
+
+#### Example: Request with non-printable bytes in body
+
+When a request body contains non-printable characters (e.g., binary data), they are displayed differently depending on verbosity level.
+
+```bash
+# Start server with verbose body output
+./target/release/statico -vvv --body "OK"
+
+# In another terminal, send a request with binary data:
+curl -X POST --data $'Hello\x00World\x01!' http://localhost:8080
+```
+
+Output with `-vvv` (inline hex for non-printable bytes):
+```
+↩ request:
+POST / HTTP/1.1
+host: localhost:8080
+content-type: application/x-www-form-urlencoded
+
+Hello00World01!
+```
+
+The `00` and `01` are the hex representations of the null byte (`\x00`) and SOH (`\x01`), displayed with reversed colors to distinguish them from regular text.
+
+Output with `-vvvv` (full hexdump format):
+```
+↩ request:
+POST / HTTP/1.1
+host: localhost:8080
+content-type: application/x-www-form-urlencoded
+
+00000000  48 65 6c 6c 6f 00 57 6f  72 6c 64 01 21           |Hello.World.!|
+```
+
+The hexdump format shows byte offsets, hex values, and ASCII representation (with `.` for non-printable characters).
 
 ### Serve content from files
 ```bash

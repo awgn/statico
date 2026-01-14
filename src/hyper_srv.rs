@@ -56,8 +56,10 @@ pub fn run_thread(
                 let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                     let config = config.clone();
                     async move {
-                        if let Ok(req) = collect_request(req).await {
-                            println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                        if verbose > 0 {
+                            if let Ok(req) = collect_request(req).await {
+                                println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                            }
                         }
                         let mut builder = Response::builder().status(config.status);
 
@@ -73,8 +75,10 @@ pub fn run_thread(
 
                         let resp = builder.body(Full::new(config.body.clone()));
                         if let Ok(ref resp) = resp {
-                            let resp = collect_response(resp.clone()).await.unwrap();
-                            println!("↪ {}:\n{}", "response".bold(),resp.pretty(verbose));
+                            if verbose > 0 {
+                                let resp = collect_response(resp.clone()).await.unwrap();
+                                println!("↪ {}:\n{}", "response".bold(), resp.pretty(verbose));
+                            }
                         }
 
                         if let Some(delay) = delay {
