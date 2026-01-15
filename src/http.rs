@@ -6,12 +6,12 @@ const DATE_VALUE_LENGTH: usize = 29;
 
 pub fn request_head_size<T>(req: &Request<T>) -> usize {
     let version_len = http_version_len(req.version());
-    
+
     // URI can be in absolute-form (http://host/path) or origin-form (/path)
     // We need to use the full URI string representation
     let uri_len = req.uri().to_string().len();
     let uri_len = if uri_len == 0 { 1 } else { uri_len }; // at minimum "/"
-    
+
     let mut size = req.method().as_str().len()                // (es. "GET")
                    + 1                                        // space
                    + uri_len                                  // URI (absolute or origin form)
@@ -59,7 +59,7 @@ pub fn response_head_size<T>(res: &Response<T>, body_len: usize) -> usize {
         size += 4                     // "date"
                 + 2                   // ": "
                 + DATE_VALUE_LENGTH   // e.g. "Sun, 06 Nov 1994 08:49:37 GMT"
-                + 2;                  // \r\n
+                + 2; // \r\n
     }
 
     // Hyper automatically adds `content-length: 0` if body is empty and header not present
@@ -73,15 +73,19 @@ pub fn response_head_size<T>(res: &Response<T>, body_len: usize) -> usize {
             size += 14                // "content-length"
                     + 2               // ": "
                     + 1               // "0"
-                    + 2;              // \r\n
+                    + 2; // \r\n
         } else {
             // Hyper will add content-length with the actual body length
             // "content-length: <len>\r\n"
-            let len_digits = if body_len == 0 { 1 } else { (body_len as f64).log10().floor() as usize + 1 };
+            let len_digits = if body_len == 0 {
+                1
+            } else {
+                (body_len as f64).log10().floor() as usize + 1
+            };
             size += 14                // "content-length"
                     + 2               // ": "
                     + len_digits      // digits of body length
-                    + 2;              // \r\n
+                    + 2; // \r\n
         }
     }
 
@@ -105,7 +109,7 @@ pub fn http_version_len(version: Version) -> usize {
     match version {
         Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => 8, // "HTTP/1.1"
         Version::HTTP_2 | Version::HTTP_3 => 6,                      // "HTTP/2"
-        _ => format!("{version:?}").len(),                           // unreachable, but just in case
+        _ => format!("{version:?}").len(), // unreachable, but just in case
     }
 }
 
@@ -117,10 +121,7 @@ mod tests {
     #[test]
     fn test_response_head_size_empty_body() {
         // Simulates: HTTP/1.1 200 OK\r\n + date header + content-length: 0 + \r\n
-        let res = Response::builder()
-            .status(StatusCode::OK)
-            .body(())
-            .unwrap();
+        let res = Response::builder().status(StatusCode::OK).body(()).unwrap();
 
         let size = response_head_size(&res, 0);
 
@@ -134,10 +135,7 @@ mod tests {
 
     #[test]
     fn test_response_head_size_with_body() {
-        let res = Response::builder()
-            .status(StatusCode::OK)
-            .body(())
-            .unwrap();
+        let res = Response::builder().status(StatusCode::OK).body(()).unwrap();
 
         let size = response_head_size(&res, 1234);
 

@@ -1,3 +1,8 @@
+use crate::options::Options;
+use crate::REQUESTS;
+use crate::REQUEST_BYTES;
+use crate::RESPONSES;
+use crate::RESPONSE_BYTES;
 use anyhow::Result;
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -8,49 +13,45 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
-use crate::REQUESTS;
-use crate::REQUEST_BYTES;
-use crate::RESPONSES;
-use crate::RESPONSE_BYTES;
 
 use crate::hyper_srv::create_listener;
-use crate::{Args, ServerConfig};
+use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
-    args: &Args,
+    opts: &Options,
 ) -> Result<()> {
     // io_uring implementation for Linux
     use tracing::info;
 
-    let num_entries = args.uring_entries.next_power_of_two();
+    let num_entries = opts.uring_entries.next_power_of_two();
     let cqsize = num_entries * 2;
-    let delay = args.delay;
+    let delay = opts.delay;
 
     let mut uring = tokio_uring::uring_builder();
 
     uring.setup_single_issuer().setup_cqsize(cqsize);
 
-    if let Some(idle) = args.uring_sqpoll {
+    if let Some(idle) = opts.uring_sqpoll {
         uring.setup_sqpoll(idle);
     } else {
         uring.setup_coop_taskrun().setup_taskrun_flag();
     }
 
-    let meter = args.meter;
+    let meter = opts.meter;
 
     tokio_uring::builder()
         .entries(num_entries) // Large ring size is critical for throughput
         .uring_builder(&uring)
         .start(async move {
             // Create socket manually with SO_REUSEPORT enabled
-            let std_listener = create_listener(addr, args)?;
+            let std_listener = create_listener(addr, opts)?;
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
             info!(
                 "Thread {} listening on {} (io_uring, entries: {}, sqpoll: {:?})",
-                id, addr, args.uring_entries, args.uring_sqpoll
+                id, addr, opts.uring_entries, opts.uring_sqpoll
             );
 
             loop {
@@ -68,7 +69,9 @@ pub fn run_thread(
 
                 // Spawn task to handle the connection with io_uring
                 tokio_uring::spawn(async move {
-                    if let Err(e) = handle_connection_uring(stream, config, false, meter, delay).await {
+                    if let Err(e) =
+                        handle_connection_uring(stream, config, false, meter, delay).await
+                    {
                         error!("Error handling io_uring connection: {}", e);
                     }
                 });

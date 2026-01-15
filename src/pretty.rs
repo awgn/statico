@@ -70,7 +70,13 @@ where
         let verb = self.0 .1;
 
         // Request line
-        writeln!(f, "{} {} {:?}", req.method().bold().blue(), req.uri(), req.version())?;
+        writeln!(
+            f,
+            "{} {} {:?}",
+            req.method().bold().blue(),
+            req.uri(),
+            req.version()
+        )?;
 
         // Headers
         if verb > 1 {
@@ -83,8 +89,8 @@ where
         if verb > 2 && !req.body().is_empty() {
             writeln!(f)?;
             match verb {
-                3 =>  format_body(req.body().as_bytes(), f)?,
-                _ =>  format_body_hexdump(req.body().as_bytes(), f)?,
+                3 => format_body(req.body().as_bytes(), f)?,
+                _ => format_body_hexdump(req.body().as_bytes(), f)?,
             }
         }
 
@@ -114,8 +120,8 @@ where
         if verb > 2 && !res.body().is_empty() {
             writeln!(f)?;
             match verb {
-                3 =>  format_body(res.body().as_bytes(), f)?,
-                _ =>  format_body_hexdump(res.body().as_bytes(), f)?,
+                3 => format_body(res.body().as_bytes(), f)?,
+                _ => format_body_hexdump(res.body().as_bytes(), f)?,
             }
         }
 
@@ -153,7 +159,6 @@ impl<B> PrettyPrint for Response<B> {
         PrettyResponse((self, verbose))
     }
 }
-
 
 /// Format body bytes: printable chars as-is, non-printable as reversed hex
 fn format_body(body: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -297,7 +302,7 @@ mod tests {
             .body("")
             .unwrap();
 
-        let output = format!("{:#}",&req.pretty(3));
+        let output = format!("{:#}", &req.pretty(3));
 
         // Should contain request line and no extra blank line for body
         assert!(output.contains("GET") && output.contains("/test"));

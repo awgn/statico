@@ -1,97 +1,23 @@
 mod http;
 mod hyper_srv;
+mod options;
 mod pretty;
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 mod uring;
 
 use crate::hyper_srv::load_body_content;
+use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
 use contatori::counters::{CounterValue, Observable};
-use humantime::parse_duration;
 use hyper::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
-
-#[derive(Parser, Clone, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-    /// Number of threads to spawn
-    #[arg(short, long, default_value_t = num_cpus::get())]
-    pub threads: usize,
-
-    /// Port to listen on
-    #[arg(short, long, default_value_t = 8080)]
-    pub port: u16,
-
-    /// Address to listen on. If not specified, listen on all interfaces.
-    #[arg(short, long)]
-    pub address: Option<String>,
-
-    /// HTTP Status code to return
-    #[arg(short, long, default_value_t = 200)]
-    pub status: u16,
-
-    /// Response body (optional)
-    #[arg(short, long)]
-    pub body: Option<String>,
-
-    /// Headers in "Name: Value" format
-    #[arg(long)]
-    pub header: Vec<String>,
-
-    /// Enable HTTP/2 (h2c) support
-    #[arg(long)]
-    pub http2: bool,
-
-    /// Receive buffer size
-    #[arg(long)]
-    pub receive_buffer_size: Option<usize>,
-
-    /// Send buffer size
-    #[arg(long)]
-    pub send_buffer_size: Option<usize>,
-
-    /// Listen backlog queue
-    #[arg(long)]
-    pub listen_backlog: Option<i32>,
-
-    /// Set TCP_NODELAY option
-    #[arg(long)]
-    pub tcp_nodelay: bool,
-
-    /// Use io_uring (Linux only)
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    #[arg(long)]
-    pub io_uring: bool,
-
-    /// Size of the io_uring Submission Queue (SQ)
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    #[arg(long, default_value_t = 4096)]
-    pub uring_entries: u32,
-
-    /// Enable kernel-side submission polling with idle timeout in milliseconds.
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    #[arg(long)]
-    pub uring_sqpoll: Option<u32>,
-
-    /// Enable meter
-    #[arg(long)]
-    pub meter: bool,
-
-    /// Increase verbosity level (can be repeated: -v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
-    pub verbose: u8,
-
-    /// Delay before sending the response (e.g., 100ms, 1s, 500us)
-    #[arg(short, long, value_parser = parse_duration)]
-    pub delay: Option<std::time::Duration>,
-}
 
 /// Configuration shared across threads
 #[derive(Clone)]
@@ -115,11 +41,11 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let args = Args::parse();
+    let opts = Options::parse();
 
     // Parse headers
     let mut parsed_headers = Vec::new();
-    for h in &args.header {
+    for h in &opts.header {
         if let Some((k, v)) = h.split_once(':') {
             parsed_headers.push((k.trim().to_string(), v.trim().to_string()));
         } else {
@@ -128,9 +54,9 @@ fn main() -> Result<()> {
     }
 
     // Load body content - either from string or file if starts with @
-    let body_content = load_body_content(args.body.as_deref())?;
+    let body_content = load_body_content(opts.body.as_deref())?;
 
-    let status_code = StatusCode::from_u16(args.status).context("Invalid status code")?;
+    let status_code = StatusCode::from_u16(opts.status).context("Invalid status code")?;
 
     let config = Arc::new(ServerConfig {
         status: status_code,
@@ -139,28 +65,28 @@ fn main() -> Result<()> {
     });
 
     // Build SocketAddr from address option
-    let addr: SocketAddr = match &args.address {
+    let addr: SocketAddr = match &opts.address {
         Some(address) => {
-            let addr_with_port = format!("{}:{}", address, args.port);
+            let addr_with_port = format!("{}:{}", address, opts.port);
             addr_with_port
                 .parse()
                 .with_context(|| format!("Invalid address: {}", addr_with_port))?
         }
-        None => SocketAddr::from(([0, 0, 0, 0], args.port)),
+        None => SocketAddr::from(([0, 0, 0, 0], opts.port)),
     };
 
-    info!("Starting server on {} with {} threads", addr, args.threads);
+    info!("Starting server on {} with {} threads", addr, opts.threads);
 
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
-    let use_uring = args.io_uring;
+    let use_uring = opts.io_uring;
     #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
     let use_uring = false;
 
-    if use_uring && args.http2 {
+    if use_uring && opts.http2 {
         return Err(anyhow!("HTTP/2 is not currently supported with io_uring"));
     }
 
-    let args = Arc::new(args);
+    let args = Arc::new(opts);
 
     let meter_enabled = args.meter;
 
@@ -260,16 +186,16 @@ fn run_thread(
     id: usize,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
-    args: &Args,
+    opts: &Options,
     _use_uring: bool,
 ) -> Result<()> {
     // Hyper implementation for Linux
     #[cfg(all(target_os = "linux", feature = "io_uring"))]
     if _use_uring {
-        crate::uring::run_thread(id, addr, config, args)
+        crate::uring::run_thread(id, addr, config, opts)
     } else {
-        crate::hyper_srv::run_thread(id, addr, config, args)
+        crate::hyper_srv::run_thread(id, addr, config, opts)
     }
     #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
-    crate::hyper_srv::run_thread(id, addr, config, args)
+    crate::hyper_srv::run_thread(id, addr, config, opts)
 }

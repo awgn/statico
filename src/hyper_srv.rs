@@ -22,17 +22,18 @@ use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 
+use crate::options::Options;
 use crate::pretty::PrettyPrint;
-use crate::{Args, ServerConfig};
+use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
-    args: &Args,
+    opts: &Options,
 ) -> Result<()> {
     // Standard Tokio single-thread runtime - create socket with SO_REUSEPORT
-    let std_listener = create_listener(addr, args)?;
+    let std_listener = create_listener(addr, opts)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -53,10 +54,10 @@ pub fn run_thread(
 
             let io = TokioIo::new(stream);
             let config = config.clone();
-            let use_http2 = args.http2;
-            let verbose = args.verbose;
-            let delay = args.delay;
-            let meter = args.meter;
+            let use_http2 = opts.http2;
+            let verbose = opts.verbose;
+            let delay = opts.delay;
+            let meter = opts.meter;
 
             // Spawn task to handle the connection
             tokio::task::spawn(async move {
@@ -247,7 +248,7 @@ pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
     }
 }
 
-pub fn create_listener(addr: SocketAddr, args: &Args) -> Result<std::net::TcpListener> {
+pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::TcpListener> {
     let domain = if addr.is_ipv6() {
         Domain::IPV6
     } else {
@@ -271,22 +272,22 @@ pub fn create_listener(addr: SocketAddr, args: &Args) -> Result<std::net::TcpLis
     }
 
     // Apply TCP_NODELAY if requested
-    if args.tcp_nodelay {
+    if opts.tcp_nodelay {
         socket.set_tcp_nodelay(true)?;
     }
 
     // Apply receive buffer size if specified
-    if let Some(size) = args.receive_buffer_size {
+    if let Some(size) = opts.receive_buffer_size {
         socket.set_recv_buffer_size(size)?;
     }
 
     // Apply send buffer size if specified
-    if let Some(size) = args.send_buffer_size {
+    if let Some(size) = opts.send_buffer_size {
         socket.set_send_buffer_size(size)?;
     }
 
     socket.bind(&addr.into())?;
-    socket.listen(args.listen_backlog.unwrap_or(1024))?;
+    socket.listen(opts.listen_backlog.unwrap_or(1024))?;
 
     // Set nonblocking mode
     socket.set_nonblocking(true)?;
