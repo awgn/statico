@@ -86,9 +86,10 @@ cargo build --release --features io_uring
 | `-a, --address <ADDRESS>` | Address to listen on. If not specified, listen on all interfaces |
 | `-s, --status <STATUS>` | HTTP status code to return (default: 200) |
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
+| `-H, --header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
 | `-d, --delay <DELAY>` | Delay before sending the response (e.g., `100ms`, `1s`, `500us`) |
-| `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`) |
-| `--header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
+| `-m, --meter` | Enable real-time metrics monitoring (requests/sec, bandwidth) |
+| `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`, `-vvvv`) |
 | `--http2` | Enable HTTP/2 (h2c) support |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
@@ -247,6 +248,32 @@ The hexdump format shows byte offsets, hex values, and ASCII representation (wit
 ./target/release/statico \
   --body @data.xml \
   --header "Content-Type: application/xml"
+```
+
+### Real-time metrics monitoring
+
+The `--meter` flag enables real-time performance monitoring, displaying metrics every second:
+
+```bash
+# Enable metrics monitoring
+./target/release/statico --meter
+
+# Example output:
+# req/s: 125430, req: 0.942 Gbps, res/s: 125430, res: 1.254 Gbps
+```
+
+The metrics show:
+- **req/s**: Requests received per second
+- **req**: Incoming bandwidth in Gbps
+- **res/s**: Responses sent per second  
+- **res**: Outgoing bandwidth in Gbps
+
+When you stop the server (Ctrl+C), it displays a final summary:
+```
+Total requests:  1234567
+Total req bytes: 1234567890 (1.235 GB)
+Total responses: 1234567
+Total res bytes: 9876543210 (9.877 GB)
 ```
 
 ## Architecture
