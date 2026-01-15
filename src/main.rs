@@ -13,13 +13,10 @@ use contatori::counters::{CounterValue, Observable};
 use humantime::parse_duration;
 use hyper::StatusCode;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
-
-static RUNNING: AtomicBool = AtomicBool::new(true);
 
 #[derive(Parser, Clone, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -169,7 +166,6 @@ fn main() -> Result<()> {
 
     // Set up ctrlc handler to print final report
     ctrlc::set_handler(move || {
-        RUNNING.store(false, Ordering::SeqCst);
         if meter_enabled {
             print_final_report();
         }
@@ -195,11 +191,8 @@ fn main() -> Result<()> {
         let handle = thread::spawn(move || {
             let (mut prev_req, mut prev_req_bytes, mut prev_res, mut prev_res_bytes) =
                 read_counters();
-            while RUNNING.load(Ordering::SeqCst) {
+            loop {
                 thread::sleep(Duration::from_secs(1));
-                if !RUNNING.load(Ordering::SeqCst) {
-                    break;
-                }
                 let (req, req_bytes, res, res_bytes) = read_counters();
 
                 let req_per_sec = req - prev_req;
