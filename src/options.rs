@@ -25,7 +25,7 @@ pub struct Options {
     pub body: Option<String>,
 
     /// Headers in "Name: Value" format
-    #[arg(long)]
+    #[arg(short = 'H', long)]
     pub header: Vec<String>,
 
     /// Enable HTTP/2 (h2c) support
@@ -64,10 +64,10 @@ pub struct Options {
     pub uring_sqpoll: Option<u32>,
 
     /// Enable meter
-    #[arg(long)]
+    #[arg(short = 'm', long)]
     pub meter: bool,
 
-    /// Increase verbosity level (can be repeated: -v, -vv, -vvv)
+    /// Increase verbosity level (can be repeated: -v, -vv, -vvv, -vvvv)
     #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
     pub verbose: u8,
 
