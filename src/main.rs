@@ -2,6 +2,7 @@ mod http;
 mod hyper_srv;
 mod options;
 mod pretty;
+mod delayed_body;
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 mod uring;
 

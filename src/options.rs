@@ -74,4 +74,8 @@ pub struct Options {
     /// Delay before sending the response (e.g., 100ms, 1s, 500us)
     #[arg(short, long, value_parser = parse_duration)]
     pub delay: Option<std::time::Duration>,
+
+    /// Delay before sending the body of the response
+    #[arg(long, value_parser = parse_duration)]
+    pub body_delay: Option<std::time::Duration>,
 }

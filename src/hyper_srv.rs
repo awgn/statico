@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use http_body_util::BodyExt;
+use http_body_util::Either;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+use crate::delayed_body::DelayedBody;
 use crate::http::{request_head_size, response_head_size};
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
@@ -57,6 +59,7 @@ pub fn run_thread(
             let use_http2 = opts.http2;
             let verbose = opts.verbose;
             let delay = opts.delay;
+            let body_delay = opts.body_delay;
             let meter = opts.meter;
 
             // Spawn task to handle the connection
@@ -117,7 +120,19 @@ pub fn run_thread(
                             builder = builder.header(CONTENT_LENGTH, config.body.len());
                         }
 
-                        let resp = builder.body(Full::new(config.body.clone()));
+                        if let Some(delay) = delay {
+                            execute_delay(delay).await;
+                        }
+
+                        let body = match body_delay {
+                            Some(delay) => {
+                                Either::Left(DelayedBody::new(Full::new(config.body.clone()), delay))
+                            }
+                            None => Either::Right(Full::new(config.body.clone())),
+                        };
+
+                        let resp = builder.body(body);
+
                         if let Ok(ref resp) = resp {
                             if meter {
                                 RESPONSES.add(1);
@@ -125,13 +140,14 @@ pub fn run_thread(
                                 RESPONSE_BYTES.add(head_size + config.body.len());
                             }
                             if verbose > 0 {
-                                let resp = collect_response(resp.clone()).await.unwrap();
-                                println!("↪ {}:\n{}", "response".bold(), resp.pretty(verbose));
+                                // Create a response with Bytes body for printing
+                                let mut print_builder = Response::builder().status(resp.status());
+                                for (k, v) in resp.headers() {
+                                    print_builder = print_builder.header(k, v);
+                                }
+                                let print_resp = print_builder.body(config.body.clone()).unwrap();
+                                println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
                             }
-                        }
-
-                        if let Some(delay) = delay {
-                            execute_delay(delay).await;
                         }
 
                         resp
@@ -220,17 +236,6 @@ mod tests {
         // "1000\r\n" (6) + <4096 bytes>\r\n (4098) + "0\r\n\r\n" (5) = 4109
         assert_eq!(chunked_body_wire_size(4096), 4109);
     }
-}
-
-#[inline]
-pub async fn collect_response<B>(res: Response<B>) -> Result<Response<Bytes>, B::Error>
-where
-    B: http_body::Body,
-{
-    let (parts, body) = res.into_parts();
-    let collected = body.collect().await?;
-    let bytes = collected.to_bytes();
-    Ok(Response::from_parts(parts, bytes))
 }
 
 pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {

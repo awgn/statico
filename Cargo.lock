@@ -880,6 +880,7 @@ dependencies = [
  "hyper-util",
  "num_cpus",
  "owo-colors",
+ "pin-project-lite",
  "pingora-timeout",
  "socket2 0.6.1",
  "tokio",
