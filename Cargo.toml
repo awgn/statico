@@ -23,7 +23,7 @@ num_cpus = "1.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 httparse = "1.10.1"
-http_wire = "0.2.5"
+http_wire = "0.3.0"
 http-body = "1.0.1"
 pingora-timeout = "0.6.0"
 humantime = "2.3.0"
