@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
 
-use crate::hyper_srv::create_listener;
+use crate::tokio::create_listener;
 use crate::ServerConfig;
 
 pub fn run_thread(
@@ -23,7 +23,7 @@ pub fn run_thread(
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
-    // io_uring implementation for Linux
+    // tokio io_uring implementation for Linux
     use tracing::info;
 
     let num_entries = opts.uring_entries.next_power_of_two();
@@ -50,7 +50,7 @@ pub fn run_thread(
             let std_listener = create_listener(addr, opts)?;
             let listener = tokio_uring::net::TcpListener::from_std(std_listener);
             info!(
-                "Thread {} listening on {} (io_uring, entries: {}, sqpoll: {:?})",
+                "Thread {} listening on {} (tokio_uring, entries: {}, sqpoll: {:?})",
                 id, addr, opts.uring_entries, opts.uring_sqpoll
             );
 
@@ -72,14 +72,14 @@ pub fn run_thread(
                     if let Err(e) =
                         handle_connection_uring(stream, config, false, meter, delay).await
                     {
-                        error!("Error handling io_uring connection: {}", e);
+                        error!("Error handling tokio_uring connection: {}", e);
                     }
                 });
             }
         })
 }
 
-#[cfg(all(target_os = "linux", feature = "io_uring"))]
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 async fn handle_connection_uring(
     stream: tokio_uring::net::TcpStream,
     config: Arc<ServerConfig>,
@@ -91,7 +91,7 @@ async fn handle_connection_uring(
 
     if http2 {
         // tracing::warn!("HTTP/2 is not supported with io_uring raw TCP");
-        return Err(anyhow::anyhow!("HTTP/2 not supported with io_uring"));
+        return Err(anyhow::anyhow!("HTTP/2 not supported with tokio_uring"));
     }
 
     // Pre-calculate the static response once.

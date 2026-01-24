@@ -1,12 +1,12 @@
 mod http;
-mod hyper_srv;
+mod tokio;
 mod options;
 mod pretty;
 mod delayed_body;
-#[cfg(all(target_os = "linux", feature = "io_uring"))]
-mod uring;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+mod tokio_uring;
 
-use crate::hyper_srv::load_body_content;
+use crate::tokio::load_body_content;
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -78,13 +78,13 @@ fn main() -> Result<()> {
 
     info!("Starting server on {} with {} threads", addr, opts.threads);
 
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     let use_uring = opts.io_uring;
-    #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
+    #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
     let use_uring = false;
 
     if use_uring && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with io_uring"));
+        return Err(anyhow!("HTTP/2 is not currently supported with tokio_uring"));
     }
 
     let args = Arc::new(opts);
@@ -191,12 +191,12 @@ fn run_thread(
     _use_uring: bool,
 ) -> Result<()> {
     // Hyper implementation for Linux
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     if _use_uring {
-        crate::uring::run_thread(id, addr, config, opts)
+        crate::tokio_uring::run_thread(id, addr, config, opts)
     } else {
-        crate::hyper_srv::run_thread(id, addr, config, opts)
+        crate::tokio::run_thread(id, addr, config, opts)
     }
-    #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
-    crate::hyper_srv::run_thread(id, addr, config, opts)
+    #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
+    crate::tokio::run_thread(id, addr, config, opts)
 }

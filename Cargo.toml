@@ -36,7 +36,7 @@ pin-project-lite = "0.2.16"
 tokio-uring = { version = "0.5.0", optional = true }
 
 [features]
-io_uring = ["tokio-uring"]
+tokio_uring = ["tokio-uring"]
 
 [profile.release]
 debug = false

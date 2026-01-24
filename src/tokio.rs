@@ -37,8 +37,10 @@ pub fn run_thread(
     // Standard Tokio single-thread runtime - create socket with SO_REUSEPORT
     let std_listener = create_listener(addr, opts)?;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let mut builder = tokio::runtime::Builder::new_current_thread();
+    let rt = builder
         .enable_all()
+        .thread_name(format!("thread-{}", id))
         .build()?;
 
     rt.block_on(async move {
@@ -121,13 +123,14 @@ pub fn run_thread(
                         }
 
                         if let Some(delay) = delay {
-                            execute_delay(delay).await;
+                            fast_sleep(delay).await;
                         }
 
                         let body = match body_delay {
-                            Some(delay) => {
-                                Either::Left(DelayedBody::new(Full::new(config.body.clone()), delay))
-                            }
+                            Some(delay) => Either::Left(DelayedBody::new(
+                                Full::new(config.body.clone()),
+                                delay,
+                            )),
                             None => Either::Right(Full::new(config.body.clone())),
                         };
 
@@ -146,7 +149,11 @@ pub fn run_thread(
                                     print_builder = print_builder.header(k, v);
                                 }
                                 let print_resp = print_builder.body(config.body.clone()).unwrap();
-                                println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
+                                println!(
+                                    "↪ {}:\n{}",
+                                    "response".bold(),
+                                    print_resp.pretty(verbose)
+                                );
                             }
                         }
 
@@ -169,11 +176,6 @@ pub fn run_thread(
             });
         }
     })
-}
-
-#[cold]
-async fn execute_delay(delay: std::time::Duration) {
-    fast_sleep(delay).await;
 }
 
 #[inline]

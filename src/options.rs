@@ -49,17 +49,17 @@ pub struct Options {
     pub tcp_nodelay: bool,
 
     /// Use io_uring (Linux only)
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[cfg(target_os = "linux")]
     #[arg(long)]
     pub io_uring: bool,
 
     /// Size of the io_uring Submission Queue (SQ)
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[cfg(all(target_os = "linux"))]
     #[arg(long, default_value_t = 4096)]
     pub uring_entries: u32,
 
     /// Enable kernel-side submission polling with idle timeout in milliseconds.
-    #[cfg(all(target_os = "linux", feature = "io_uring"))]
+    #[cfg(all(target_os = "linux"))]
     #[arg(long)]
     pub uring_sqpoll: Option<u32>,
 
