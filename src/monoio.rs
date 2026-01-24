@@ -88,7 +88,7 @@ async fn handle_connection_monoio(
     meter: bool,
     delay: Option<Duration>,
 ) -> Result<usize> {
-    use http_wire::{WireDecode, WireEncodeSync};
+    use http_wire::{WireDecode, WireEncode};
 
     if http2 {
         return Err(anyhow::anyhow!("HTTP/2 not supported with monoio"));
@@ -96,7 +96,7 @@ async fn handle_connection_monoio(
 
     // Pre-calculate the static response once.
     let response_bytes = match build_response(config.clone()).await {
-        Ok(res) => match res.encode_sync() {
+        Ok(res) => match res.encode() {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => return Ok(0),
         },

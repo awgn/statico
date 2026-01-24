@@ -87,7 +87,7 @@ async fn handle_connection_uring(
     meter: bool,
     delay: Option<Duration>,
 ) -> Result<usize> {
-    use http_wire::{WireDecode, WireEncode};
+    use http_wire::{WireDecode, WireEncodeAsync};
 
     if http2 {
         // tracing::warn!("HTTP/2 is not supported with io_uring raw TCP");
@@ -96,7 +96,7 @@ async fn handle_connection_uring(
 
     // Pre-calculate the static response once.
     let response_bytes = match build_response(config.clone()).await {
-        Ok(res) => match res.encode().await {
+        Ok(res) => match res.encode_async().await {
             Ok(bytes) => bytes.to_vec(),
             Err(_) => return Ok(0),
         },
