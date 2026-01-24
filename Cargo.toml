@@ -34,9 +34,13 @@ pin-project-lite = "0.2.16"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-uring = { version = "0.5.0", optional = true }
+monoio = { version = "0.2", optional = true }
+io-uring = { version = "0.6", optional = true }
 
 [features]
-tokio_uring = ["tokio-uring"]
+tokio_uring = ["dep:tokio-uring"]
+monoio = ["dep:monoio", "dep:io-uring"]
+full = ["tokio_uring", "monoio"]
 
 [profile.release]
 debug = false

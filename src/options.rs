@@ -1,5 +1,30 @@
 use clap::Parser;
 use humantime::parse_duration;
+use std::str::FromStr;
+
+#[derive(Clone, Debug)]
+pub enum Runtime {
+    Tokio,
+    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+    TokioUring,
+    #[cfg(all(target_os = "linux", feature = "monoio"))]
+    Monoio,
+}
+
+impl FromStr for Runtime {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "tokio" => Ok(Runtime::Tokio),
+            #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+            "tokio-uring" => Ok(Runtime::TokioUring),
+            #[cfg(all(target_os = "linux", feature = "monoio"))]
+            "monoio" => Ok(Runtime::Monoio),
+            _ => Err(format!("Unknown runtime: {}", s)),
+        }
+    }
+}
 
 #[derive(Parser, Clone, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -48,11 +73,6 @@ pub struct Options {
     #[arg(long)]
     pub tcp_nodelay: bool,
 
-    /// Use io_uring (Linux only)
-    #[cfg(target_os = "linux")]
-    #[arg(long)]
-    pub io_uring: bool,
-
     /// Size of the io_uring Submission Queue (SQ)
     #[cfg(all(target_os = "linux"))]
     #[arg(long, default_value_t = 4096)]
@@ -78,4 +98,8 @@ pub struct Options {
     /// Delay before sending the body of the response
     #[arg(long, value_parser = parse_duration)]
     pub body_delay: Option<std::time::Duration>,
+
+    /// Runtime to use
+    #[arg(long, default_value = "tokio")]
+    pub runtime: Runtime,
 }

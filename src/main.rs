@@ -6,6 +6,9 @@ mod delayed_body;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
 
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+mod monoio;
+
 use crate::tokio::load_body_content;
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
@@ -79,12 +82,12 @@ fn main() -> Result<()> {
     info!("Starting server on {} with {} threads", addr, opts.threads);
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
-    let use_uring = opts.io_uring;
-    #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
-    let use_uring = false;
-
-    if use_uring && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with tokio_uring"));
+    if matches!(opts.runtime, crate::options::Runtime::TokioUring) && opts.http2 {
+        return Err(anyhow!("HTTP/2 is not currently supported with tokio-uring"));
+    }
+    #[cfg(all(target_os = "linux", feature = "monoio"))]
+    if matches!(opts.runtime, crate::options::Runtime::Monoio) && opts.http2 {
+        return Err(anyhow!("HTTP/2 is not currently supported with monoio"));
     }
 
     let args = Arc::new(opts);
@@ -107,7 +110,7 @@ fn main() -> Result<()> {
         let args = args.clone();
 
         let handle = thread::spawn(move || {
-            if let Err(e) = run_thread(id, addr, config, &args, use_uring) {
+            if let Err(e) = run_thread(id, addr, config, &args) {
                 error!("Thread {} error: {}", id, e);
             }
         });
@@ -188,15 +191,13 @@ fn run_thread(
     addr: SocketAddr,
     config: Arc<ServerConfig>,
     opts: &Options,
-    _use_uring: bool,
 ) -> Result<()> {
-    // Hyper implementation for Linux
-    #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
-    if _use_uring {
-        crate::tokio_uring::run_thread(id, addr, config, opts)
-    } else {
-        crate::tokio::run_thread(id, addr, config, opts)
+    use crate::options::Runtime;
+    match opts.runtime {
+        Runtime::Tokio => crate::tokio::run_thread(id, addr, config, opts),
+        #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+        Runtime::TokioUring => crate::tokio_uring::run_thread(id, addr, config, opts),
+        #[cfg(all(target_os = "linux", feature = "monoio"))]
+        Runtime::Monoio => crate::monoio::run_thread(id, addr, config, opts),
     }
-    #[cfg(not(all(target_os = "linux", feature = "tokio_uring")))]
-    crate::tokio::run_thread(id, addr, config, opts)
 }
