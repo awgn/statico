@@ -10,6 +10,8 @@ pub enum Runtime {
     TokioUring,
     #[cfg(all(target_os = "linux", feature = "monoio"))]
     Monoio,
+    #[cfg(all(target_os = "linux", feature = "glommio"))]
+    Glommio,
 }
 
 impl FromStr for Runtime {
@@ -23,6 +25,8 @@ impl FromStr for Runtime {
             "tokio-uring" => Ok(Runtime::TokioUring),
             #[cfg(all(target_os = "linux", feature = "monoio"))]
             "monoio" => Ok(Runtime::Monoio),
+            #[cfg(all(target_os = "linux", feature = "glommio"))]
+            "glommio" => Ok(Runtime::Glommio),
             _ => Err(format!("Unknown runtime: {}", s)),
         }
     }

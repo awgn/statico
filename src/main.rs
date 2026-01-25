@@ -9,8 +9,10 @@ mod tokio_uring;
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 mod monoio;
 
+#[cfg(all(target_os = "linux", feature = "glommio"))]
+mod glommio;
+
 use crate::options::Options;
-use crate::tokio::load_body_content;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
@@ -22,6 +24,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
+use pingora_timeout::fast_timeout::fast_sleep;
+use socket2::{Domain, Protocol, Socket, Type};
 
 /// Configuration shared across threads
 #[derive(Clone)]
@@ -91,6 +95,10 @@ fn main() -> Result<()> {
     if matches!(opts.runtime, crate::options::Runtime::Monoio) && opts.http2 {
         return Err(anyhow!("HTTP/2 is not currently supported with monoio"));
     }
+    #[cfg(all(target_os = "linux", feature = "glommio"))]
+    if matches!(opts.runtime, crate::options::Runtime::Glommio) && opts.http2 {
+        return Err(anyhow!("HTTP/2 is not currently supported with glommio"));
+    }
 
     let args = Arc::new(opts);
 
@@ -157,6 +165,26 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
+    match body {
+        Some(content) if content.starts_with('@') => {
+            // Remove @ prefix and treat as file path
+            let file_path = &content[1..];
+            info!("Loading body content from file: {}", file_path);
+            let file_content = std::fs::read_to_string(file_path)
+                .with_context(|| format!("Failed to read body file: {}", file_path))?;
+            Ok(Bytes::from(file_content))
+        }
+        Some(content) => Ok(Bytes::from(content.to_string())),
+        None => Ok(Bytes::new()),
+    }
+}
+
+#[cold]
+async fn execute_delay(delay: std::time::Duration) {
+    fast_sleep(delay).await;
+}
+
 #[inline]
 fn read_counters() -> (CounterValue, CounterValue, CounterValue, CounterValue) {
     (
@@ -165,6 +193,55 @@ fn read_counters() -> (CounterValue, CounterValue, CounterValue, CounterValue) {
         RESPONSES.value(),
         RESPONSE_BYTES.value(),
     )
+}
+
+pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::TcpListener> {
+    let domain = if addr.is_ipv6() {
+        Domain::IPV6
+    } else {
+        Domain::IPV4
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+
+    // Enable SO_REUSEPORT on all Unix systems that support it
+    #[cfg(unix)]
+    {
+        if let Err(e) = socket.set_reuse_port(true) {
+            use tracing::warn;
+
+            warn!("SO_REUSEPORT failed: {}. Falling back to SO_REUSEADDR", e);
+            socket.set_reuse_address(true)?;
+        }
+    }
+
+    // On non-Unix systems, use SO_REUSEADDR
+    #[cfg(not(unix))]
+    {
+        socket.set_reuse_address(true)?;
+    }
+
+    // Apply TCP_NODELAY if requested
+    if opts.tcp_nodelay {
+        socket.set_tcp_nodelay(true)?;
+    }
+
+    // Apply receive buffer size if specified
+    if let Some(size) = opts.receive_buffer_size {
+        socket.set_recv_buffer_size(size)?;
+    }
+
+    // Apply send buffer size if specified
+    if let Some(size) = opts.send_buffer_size {
+        socket.set_send_buffer_size(size)?;
+    }
+
+    socket.bind(&addr.into())?;
+    socket.listen(opts.listen_backlog.unwrap_or(1024))?;
+
+    // Set nonblocking mode
+    socket.set_nonblocking(true)?;
+
+    Ok(socket.into())
 }
 
 fn print_final_report() {
@@ -202,5 +279,7 @@ fn run_thread(
         Runtime::TokioUring => crate::tokio_uring::run_thread(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "monoio"))]
         Runtime::Monoio => crate::monoio::run_thread(id, addr, config, opts),
+        #[cfg(all(target_os = "linux", feature = "glommio"))]
+        Runtime::Glommio => crate::glommio::run_thread(id, addr, config, opts),
     }
 }

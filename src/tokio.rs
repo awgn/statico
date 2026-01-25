@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Result};
 use http_body_util::BodyExt;
 use http_body_util::Either;
 use http_body_util::Full;
@@ -10,21 +10,21 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use owo_colors::OwoColorize;
-use pingora_timeout::fast_timeout::fast_sleep;
-use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task::LocalSet;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::delayed_body::DelayedBody;
+use crate::execute_delay;
 use crate::http::{request_head_size, response_head_size};
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 
+use crate::create_listener;
 use crate::options::Options;
 use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
@@ -115,7 +115,7 @@ async fn tokio_srv(
                     }
 
                     if let Some(delay) = delay {
-                        fast_sleep(delay).await;
+                        execute_delay(delay).await;
                     }
 
                     let body = match body_delay {
@@ -277,66 +277,4 @@ mod tests {
         // "1000\r\n" (6) + <4096 bytes>\r\n (4098) + "0\r\n\r\n" (5) = 4109
         assert_eq!(chunked_body_wire_size(4096), 4109);
     }
-}
-
-pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
-    match body {
-        Some(content) if content.starts_with('@') => {
-            // Remove @ prefix and treat as file path
-            let file_path = &content[1..];
-            info!("Loading body content from file: {}", file_path);
-            let file_content = std::fs::read_to_string(file_path)
-                .with_context(|| format!("Failed to read body file: {}", file_path))?;
-            Ok(Bytes::from(file_content))
-        }
-        Some(content) => Ok(Bytes::from(content.to_string())),
-        None => Ok(Bytes::new()),
-    }
-}
-
-pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::TcpListener> {
-    let domain = if addr.is_ipv6() {
-        Domain::IPV6
-    } else {
-        Domain::IPV4
-    };
-    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-
-    // Enable SO_REUSEPORT on all Unix systems that support it
-    #[cfg(unix)]
-    {
-        if let Err(e) = socket.set_reuse_port(true) {
-            warn!("SO_REUSEPORT failed: {}. Falling back to SO_REUSEADDR", e);
-            socket.set_reuse_address(true)?;
-        }
-    }
-
-    // On non-Unix systems, use SO_REUSEADDR
-    #[cfg(not(unix))]
-    {
-        socket.set_reuse_address(true)?;
-    }
-
-    // Apply TCP_NODELAY if requested
-    if opts.tcp_nodelay {
-        socket.set_tcp_nodelay(true)?;
-    }
-
-    // Apply receive buffer size if specified
-    if let Some(size) = opts.receive_buffer_size {
-        socket.set_recv_buffer_size(size)?;
-    }
-
-    // Apply send buffer size if specified
-    if let Some(size) = opts.send_buffer_size {
-        socket.set_send_buffer_size(size)?;
-    }
-
-    socket.bind(&addr.into())?;
-    socket.listen(opts.listen_backlog.unwrap_or(1024))?;
-
-    // Set nonblocking mode
-    socket.set_nonblocking(true)?;
-
-    Ok(socket.into())
 }

@@ -1,3 +1,4 @@
+use crate::execute_delay;
 use crate::options::Options;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
@@ -13,13 +14,12 @@ use monoio::io::AsyncWriteRentExt;
 use monoio::time::TimeDriver;
 use monoio::IoUringDriver;
 use monoio::RuntimeBuilder;
-use pingora_timeout::fast_timeout::fast_sleep;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
 
-use crate::tokio::create_listener;
+use crate::create_listener;
 use crate::ServerConfig;
 
 pub fn run_thread(
@@ -174,7 +174,7 @@ async fn handle_connection_monoio(
             // Submit write (monoio)
             let (result, buf) = stream.write_all(response_buf).await;
             response_buf = buf;
-            result.map_err(|e| anyhow::Error::new(e))?;
+            result?;
 
             consumed_in_batch += req_len;
 
@@ -214,11 +214,6 @@ async fn handle_connection_monoio(
     }
 
     Ok(requests_served)
-}
-
-#[cold]
-async fn execute_delay(delay: std::time::Duration) {
-    fast_sleep(delay).await;
 }
 
 async fn build_response(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {

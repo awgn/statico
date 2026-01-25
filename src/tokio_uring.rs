@@ -8,13 +8,13 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
-use pingora_timeout::fast_timeout::fast_sleep;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
+use crate::execute_delay;
 
-use crate::tokio::create_listener;
+use crate::create_listener;
 use crate::ServerConfig;
 
 pub fn run_thread(
@@ -213,11 +213,6 @@ async fn handle_connection_uring(
     }
 
     Ok(requests_served)
-}
-
-#[cold]
-async fn execute_delay(delay: std::time::Duration) {
-    fast_sleep(delay).await;
 }
 
 async fn build_response(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
