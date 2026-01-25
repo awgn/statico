@@ -50,6 +50,8 @@ The following benchmark compares Statico against other popular HTTP servers and 
 4. **Rust frameworks comparison**: Statico outperforms both Axum and actix-web significantly, demonstrating the benefit of its specialized architecture (per-thread Tokio runtimes + SO_REUSEPORT).
 5. **Go comparison**: Even fasthttp, known for its performance, reaches only ~53% of Statico+io_uring throughput at 4 threads.
 
+**Note**: The "statico + io_uring" results in the benchmark refer to the `tokio-uring` runtime (enabled with `--runtime tokio-uring`). Statico also supports other io_uring-based runtimes such as `monoio` and `glommio`, which may show even better performance figures. An updated benchmark will be published once the codebase reaches sufficient stability.
+
 ### Why is Statico fast?
 
 - Minimal request processing overhead
@@ -88,16 +90,17 @@ cargo build --release --features io_uring
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
 | `-H, --header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
 | `-d, --delay <DELAY>` | Delay before sending the response (e.g., `100ms`, `1s`, `500us`) |
+| `--body-delay <DELAY>` | Delay before sending the body of the response (e.g., `100ms`, `1s`, `500us`) |
 | `-m, --meter` | Enable real-time metrics monitoring (requests/sec, bandwidth) |
 | `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`, `-vvvv`) |
 | `--http2` | Enable HTTP/2 (h2c) support |
+| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `tokio-uring`, `monoio`, `glommio` (default: tokio) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
 | `--tcp-nodelay` | Set TCP_NODELAY option |
-| `--io-uring` | Use io_uring (Linux only, requires `io_uring` feature) |
-| `--uring-entries <SIZE>` | Size of the io_uring Submission Queue (SQ) (default: 4096) |
-| `--uring-sqpoll <MS>` | Enable kernel-side submission polling with idle timeout in milliseconds |
+| `--uring-entries <SIZE>` | Size of the io_uring Submission Queue (SQ) (default: 4096, Linux only) |
+| `--uring-sqpoll <MS>` | Enable kernel-side submission polling with idle timeout in milliseconds (Linux only) |
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
@@ -150,10 +153,16 @@ Start a server on port 8080 with default settings:
   --header "Content-Type: text/plain"
 ```
 
-### With io_uring (Linux only)
+### With io_uring runtimes (Linux only)
 ```bash
-# Requires compilation with --features io_uring
-./target/release/statico --io-uring --threads 8
+# Using tokio-uring (requires compilation with --features tokio_uring)
+./target/release/statico --runtime tokio-uring --threads 8
+
+# Using monoio (requires compilation with --features monoio)
+./target/release/statico --runtime monoio --threads 8
+
+# Using glommio (requires compilation with --features glommio)
+./target/release/statico --runtime glommio --threads 8
 ```
 
 ### With response delay (latency simulation)
@@ -289,13 +298,35 @@ Total res bytes: 9876543210 (9.877 GB)
 - **Other Unix systems**: Falls back to `SO_REUSEADDR` (connections handled by one thread)
 - **Windows**: Uses `SO_REUSEADDR`
 
-### io_uring Support (Linux only)
-The `io_uring` feature provides experimental support for Linux's io_uring interface:
-- Compile with `--features io_uring`
-- Run with `--uring` flag
-- Configure the submission queue size with `--uring-entries` (default: 4096)
-- Enable kernel-side polling with `--uring-sqpoll <timeout_ms>` 
-- Currently provides a simplified implementation (only HTTP/1.1 is supported)
+### Runtime Support
+
+Statico supports multiple async runtimes, selectable via the `--runtime` option:
+
+#### Standard Runtimes
+- **tokio** (default): Multiple Single-threaded Tokio runtimes
+- **tokio-local**: Multiple Single-threaded Tokio runtimes spawning tasks on `LocalSet`.
+
+#### io_uring-based Runtimes (Linux only)
+These runtimes provide experimental support for Linux's io_uring interface and may offer significantly better performance:
+
+- **tokio-uring**: Requires compilation with `--features tokio_uring`
+  - Run with `--runtime tokio-uring`
+  - This is the runtime used in the benchmark results shown above
+  
+- **monoio**: Requires compilation with `--features monoio`
+  - Run with `--runtime monoio`
+  - May show even better performance than tokio-uring
+  
+- **glommio**: Requires compilation with `--features glommio`
+  - Run with `--runtime glommio`
+  - May show even better performance than tokio-uring
+
+#### io_uring Configuration
+When using io_uring-based runtimes, you can configure:
+- Submission queue size with `--uring-entries` (default: 4096)
+- Kernel-side polling with `--uring-sqpoll <timeout_ms>`
+
+Note: io_uring runtimes currently provide a simplified implementation (only HTTP/1.1 is supported)
 
 ## Use Cases
 
