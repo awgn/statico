@@ -8,11 +8,11 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
-use monoio::IoUringDriver;
-use monoio::RuntimeBuilder;
 use monoio::io::AsyncReadRent;
 use monoio::io::AsyncWriteRentExt;
 use monoio::time::TimeDriver;
+use monoio::IoUringDriver;
+use monoio::RuntimeBuilder;
 use pingora_timeout::fast_timeout::fast_sleep;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,7 +46,9 @@ pub fn run_thread(
         uring.setup_coop_taskrun().setup_taskrun_flag();
     }
 
-    let builder : RuntimeBuilder<TimeDriver<IoUringDriver>> = monoio::RuntimeBuilder::new().enable_all().uring_builder(uring);
+    let builder: RuntimeBuilder<TimeDriver<IoUringDriver>> = monoio::RuntimeBuilder::new()
+        .enable_all()
+        .uring_builder(uring);
     let mut rt = builder.build().unwrap();
 
     rt.block_on(async move {
@@ -71,8 +73,7 @@ pub fn run_thread(
 
             // Spawn task to handle the connection with monoio
             monoio::spawn(async move {
-                if let Err(e) =
-                    handle_connection_monoio(stream, config, false, meter, delay).await
+                if let Err(e) = handle_connection_monoio(stream, config, false, meter, delay).await
                 {
                     error!("Error handling monoio connection: {}", e);
                 }

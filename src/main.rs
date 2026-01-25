@@ -1,16 +1,16 @@
+mod delayed_body;
 mod http;
-mod tokio;
 mod options;
 mod pretty;
-mod delayed_body;
+mod tokio;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
 
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 mod monoio;
 
-use crate::tokio::load_body_content;
 use crate::options::Options;
+use crate::tokio::load_body_content;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
@@ -83,7 +83,9 @@ fn main() -> Result<()> {
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     if matches!(opts.runtime, crate::options::Runtime::TokioUring) && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with tokio-uring"));
+        return Err(anyhow!(
+            "HTTP/2 is not currently supported with tokio-uring"
+        ));
     }
     #[cfg(all(target_os = "linux", feature = "monoio"))]
     if matches!(opts.runtime, crate::options::Runtime::Monoio) && opts.http2 {
@@ -195,6 +197,7 @@ fn run_thread(
     use crate::options::Runtime;
     match opts.runtime {
         Runtime::Tokio => crate::tokio::run_thread(id, addr, config, opts),
+        Runtime::TokioLocal => crate::tokio::run_thread_local(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
         Runtime::TokioUring => crate::tokio_uring::run_thread(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "monoio"))]

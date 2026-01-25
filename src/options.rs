@@ -5,6 +5,7 @@ use std::str::FromStr;
 #[derive(Clone, Debug)]
 pub enum Runtime {
     Tokio,
+    TokioLocal,
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     TokioUring,
     #[cfg(all(target_os = "linux", feature = "monoio"))]
@@ -17,6 +18,7 @@ impl FromStr for Runtime {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "tokio" => Ok(Runtime::Tokio),
+            "tokio-local" => Ok(Runtime::TokioLocal),
             #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
             "tokio-uring" => Ok(Runtime::TokioUring),
             #[cfg(all(target_os = "linux", feature = "monoio"))]
