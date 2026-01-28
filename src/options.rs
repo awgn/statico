@@ -12,6 +12,8 @@ pub enum Runtime {
     Monoio,
     #[cfg(all(target_os = "linux", feature = "glommio"))]
     Glommio,
+    #[cfg(feature = "smol")]
+    Smol,
 }
 
 impl FromStr for Runtime {
@@ -27,6 +29,8 @@ impl FromStr for Runtime {
             "monoio" => Ok(Runtime::Monoio),
             #[cfg(all(target_os = "linux", feature = "glommio"))]
             "glommio" => Ok(Runtime::Glommio),
+            #[cfg(feature = "smol")]
+            "smol" => Ok(Runtime::Smol),
             _ => Err(format!("Unknown runtime: {}", s)),
         }
     }

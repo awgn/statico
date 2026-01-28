@@ -12,6 +12,9 @@ mod monoio;
 #[cfg(all(target_os = "linux", feature = "glommio"))]
 mod glommio;
 
+#[cfg(feature = "smol")]
+mod smol;
+
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -68,7 +71,7 @@ fn main() -> Result<()> {
 
     let config = Arc::new(ServerConfig {
         status: status_code,
-        body: body_content.clone(),
+        body: body_content,
         headers: parsed_headers,
     });
 
@@ -98,6 +101,10 @@ fn main() -> Result<()> {
     #[cfg(all(target_os = "linux", feature = "glommio"))]
     if matches!(opts.runtime, crate::options::Runtime::Glommio) && opts.http2 {
         return Err(anyhow!("HTTP/2 is not currently supported with glommio"));
+    }
+    #[cfg(feature = "smol")]
+    if matches!(opts.runtime, crate::options::Runtime::Smol) && opts.http2 {
+        return Err(anyhow!("HTTP/2 is not currently supported with smol"));
     }
 
     let args = Arc::new(opts);
@@ -281,5 +288,7 @@ fn run_thread(
         Runtime::Monoio => crate::monoio::run_thread(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "glommio"))]
         Runtime::Glommio => crate::glommio::run_thread(id, addr, config, opts),
+        #[cfg(feature = "smol")]
+        Runtime::Smol => crate::smol::run_thread(id, addr, config, opts),
     }
 }
