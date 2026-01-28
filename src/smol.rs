@@ -15,11 +15,15 @@ use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
+use hyper::rt::{Read, ReadBufCursor, Write};
 use hyper::{Request, Response};
 use owo_colors::OwoColorize;
-use smol_hyper::rt::FuturesIo;
+use smol::io::{AsyncRead, AsyncWrite};
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tracing::{error, info};
 
 pub fn run_thread(
@@ -45,7 +49,13 @@ pub fn run_thread(
                 }
             };
 
-            let io = FuturesIo::new(stream);
+            if opts.tcp_nodelay {
+                if let Err(e) = stream.set_nodelay(true) {
+                    error!("Failed to set TCP_NODELAY: {}", e);
+                }
+            }
+
+            let io = SmolIo::new(stream);
             let config = config.clone();
             let use_http2 = opts.http2;
             let verbose = opts.verbose;
@@ -184,8 +194,7 @@ where
     }
 }
 
-#[inline]
-pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
+#[inline] pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
 where
     B: http_body::Body,
 {
@@ -193,4 +202,58 @@ where
     let collected = body.collect().await?;
     let bytes = collected.to_bytes();
     Ok(Request::from_parts(parts, bytes))
+}
+
+struct SmolIo<T>(T);
+
+impl<T> SmolIo<T> {
+    fn new(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T: AsyncRead + Unpin> Read for SmolIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        mut buf: ReadBufCursor<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        let slice = unsafe {
+            let b = buf.as_mut();
+            &mut *(b as *mut [MaybeUninit<u8>] as *mut [u8])
+        };
+
+        match Pin::new(&mut self.0).poll_read(cx, slice) {
+            Poll::Ready(Ok(n)) => {
+                unsafe { buf.advance(n) };
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: AsyncWrite + Unpin> Write for SmolIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.0).poll_close(cx)
+    }
 }
