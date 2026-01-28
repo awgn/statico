@@ -22,13 +22,13 @@ use clap::Parser;
 use contatori::counters::monotone::Monotone;
 use contatori::counters::{CounterValue, Observable};
 use hyper::StatusCode;
+use pingora_timeout::fast_timeout::fast_sleep;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use pingora_timeout::fast_timeout::fast_sleep;
-use socket2::{Domain, Protocol, Socket, Type};
 
 /// Configuration shared across threads
 #[derive(Clone)]

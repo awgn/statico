@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use http_body_util::BodyExt;
 use http_body_util::Either;
 use http_body_util::Full;
@@ -18,6 +18,7 @@ use tracing::{error, info};
 
 use crate::delayed_body::DelayedBody;
 use crate::execute_delay;
+use crate::http::chunked_body_wire_size;
 use crate::http::{request_head_size, response_head_size};
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
@@ -226,55 +227,4 @@ where
     let collected = body.collect().await?;
     let bytes = collected.to_bytes();
     Ok(Request::from_parts(parts, bytes))
-}
-
-/// Calculate the wire size of a chunked body given the decoded body size.
-///
-/// Chunked encoding format for a single chunk:
-/// <size in hex>\r\n<data>\r\n
-/// Plus the terminating chunk: 0\r\n\r\n
-///
-/// For simplicity, we assume the body is sent as a single chunk.
-fn chunked_body_wire_size(body_len: usize) -> usize {
-    if body_len == 0 {
-        // Just the terminating chunk: "0\r\n\r\n"
-        5
-    } else {
-        // Calculate hex digits needed for the size
-        let hex_digits = format!("{:x}", body_len).len();
-        // <hex_size>\r\n<body>\r\n + terminating "0\r\n\r\n"
-        hex_digits + 2 + body_len + 2 + 5
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_chunked_body_wire_size_empty() {
-        // Empty body: just "0\r\n\r\n"
-        assert_eq!(chunked_body_wire_size(0), 5);
-    }
-
-    #[test]
-    fn test_chunked_body_wire_size_small() {
-        // Body "1234" (4 bytes):
-        // "4\r\n" (3) + "1234\r\n" (6) + "0\r\n\r\n" (5) = 14
-        assert_eq!(chunked_body_wire_size(4), 14);
-    }
-
-    #[test]
-    fn test_chunked_body_wire_size_two_hex_digits() {
-        // Body of 16 bytes (hex "10"):
-        // "10\r\n" (4) + <16 bytes>\r\n (18) + "0\r\n\r\n" (5) = 27
-        assert_eq!(chunked_body_wire_size(16), 27);
-    }
-
-    #[test]
-    fn test_chunked_body_wire_size_large() {
-        // Body of 4096 bytes (hex "1000"):
-        // "1000\r\n" (6) + <4096 bytes>\r\n (4098) + "0\r\n\r\n" (5) = 4109
-        assert_eq!(chunked_body_wire_size(4096), 4109);
-    }
 }

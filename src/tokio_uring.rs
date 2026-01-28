@@ -1,3 +1,4 @@
+use crate::execute_delay;
 use crate::options::Options;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
@@ -12,7 +13,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
-use crate::execute_delay;
 
 use crate::create_listener;
 use crate::ServerConfig;

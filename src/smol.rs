@@ -1,6 +1,6 @@
 use crate::delayed_body::DelayedBody;
 use crate::execute_delay;
-use crate::http::{request_head_size, response_head_size};
+use crate::http::{chunked_body_wire_size, request_head_size, response_head_size};
 use crate::options::Options;
 use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
@@ -134,13 +134,18 @@ pub fn run_thread(
                                 }
                                 if verbose > 0 {
                                     // Create a response with Bytes body for printing
-                                    let mut print_builder = Response::builder().status(resp.status());
+                                    let mut print_builder =
+                                        Response::builder().status(resp.status());
                                     for (k, v) in resp.headers() {
                                         print_builder = print_builder.header(k, v);
                                     }
                                     let print_resp =
                                         print_builder.body(config.body.clone()).unwrap();
-                                    println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
+                                    println!(
+                                        "↪ {}:\n{}",
+                                        "response".bold(),
+                                        print_resp.pretty(verbose)
+                                    );
                                 }
                             }
 
@@ -188,17 +193,4 @@ where
     let collected = body.collect().await?;
     let bytes = collected.to_bytes();
     Ok(Request::from_parts(parts, bytes))
-}
-
-/// Calculate the wire size of a chunked body given the decoded body size.
-fn chunked_body_wire_size(body_len: usize) -> usize {
-    if body_len == 0 {
-        // Just the terminating chunk: "0\r\n\r\n"
-        5
-    } else {
-        // Calculate hex digits needed for the size
-        let hex_digits = format!("{:x}", body_len).len();
-        // <hex_size>\r\n<body>\r\n + terminating "0\r\n\r\n"
-        hex_digits + 2 + body_len + 2 + 5
-    }
 }

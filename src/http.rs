@@ -113,6 +113,27 @@ pub fn http_version_len(version: Version) -> usize {
     }
 }
 
+#[inline]
+pub fn chunked_body_wire_size(body_len: usize) -> usize {
+    if body_len == 0 {
+        // Just the terminating chunk: "0\r\n\r\n"
+        return 5;
+    }
+
+    // Determine the number of bits actually used by the number.
+    // leading_zeros() is extremely fast (usually a single CPU instruction like LZCNT).
+    let bits_used = usize::BITS - body_len.leading_zeros();
+
+    // Calculate how many hex digits are needed (1 hex digit = 4 bits).
+    // We do integer division with ceiling: (n + divisor - 1) / divisor.
+    let hex_digits = (bits_used + 3) / 4;
+
+    // Total size:
+    // <hex_digits> + "\r\n" + <body> + "\r\n" + "0\r\n\r\n"
+    // hex_digits + body_len + 2 + 2 + 5
+    (hex_digits as usize) + body_len + 9
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +240,32 @@ mod tests {
         // \r\n = 2
         // Total = 16 + 22 + 2 = 40
         assert_eq!(size, 40);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_empty() {
+        // Empty body: just "0\r\n\r\n"
+        assert_eq!(chunked_body_wire_size(0), 5);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_small() {
+        // Body "1234" (4 bytes):
+        // "4\r\n" (3) + "1234\r\n" (6) + "0\r\n\r\n" (5) = 14
+        assert_eq!(chunked_body_wire_size(4), 14);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_two_hex_digits() {
+        // Body of 16 bytes (hex "10"):
+        // "10\r\n" (4) + <16 bytes>\r\n (18) + "0\r\n\r\n" (5) = 27
+        assert_eq!(chunked_body_wire_size(16), 27);
+    }
+
+    #[test]
+    fn test_chunked_body_wire_size_large() {
+        // Body of 4096 bytes (hex "1000"):
+        // "1000\r\n" (6) + <4096 bytes>\r\n (4098) + "0\r\n\r\n" (5) = 4109
+        assert_eq!(chunked_body_wire_size(4096), 4109);
     }
 }
