@@ -178,8 +178,8 @@ pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
             // Remove @ prefix and treat as file path
             let file_path = &content[1..];
             info!("Loading body content from file: {}", file_path);
-            let file_content = std::fs::read_to_string(file_path)
-                .with_context(|| format!("Failed to read body file: {}", file_path))?;
+            let file_content = std::fs::read(file_path)
+                .with_context(|| format!("Failed to read body from {}", file_path))?;
             Ok(Bytes::from(file_content))
         }
         Some(content) => Ok(Bytes::from(content.to_string())),
