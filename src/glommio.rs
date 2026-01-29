@@ -10,6 +10,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -135,7 +136,8 @@ async fn handle_connection_glommio(
         let mut consumed_in_batch = 0;
         let mut loop_slice = parse_slice;
 
-        while let Some(req_len) = http_wire::request::RequestLength::decode(loop_slice) {
+        let mut headers = [const { MaybeUninit::uninit() }; 128];
+        while let Ok((_, req_len)) = http_wire::request::FullRequest::decode_uninit(loop_slice, &mut headers) {
             requests_served += 1;
             if meter {
                 REQUESTS.add(1);

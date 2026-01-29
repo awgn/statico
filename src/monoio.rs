@@ -14,6 +14,7 @@ use monoio::io::AsyncWriteRentExt;
 use monoio::time::TimeDriver;
 use monoio::IoUringDriver;
 use monoio::RuntimeBuilder;
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -157,8 +158,10 @@ async fn handle_connection_monoio(
         let mut consumed_in_batch = 0;
         let mut loop_slice = parse_slice;
 
+        let mut headers = [const { MaybeUninit::uninit() }; 128];
+
         // 3. Parsing Loop
-        while let Some(req_len) = http_wire::request::RequestLength::decode(loop_slice) {
+        while let Ok((_, req_len)) = http_wire::request::FullRequest::decode_uninit(loop_slice, &mut headers) {
             requests_served += 1;
             if meter {
                 REQUESTS.add(1);

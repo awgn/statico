@@ -882,9 +882,9 @@ dependencies = [
 
 [[package]]
 name = "http_wire"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d8ede8a62f36ba6ac43237b9d908aeed70f248809fa5a243a8471035764c2c"
+checksum = "961fd1139e8e6ed265fbd06c19032a8f0ada84ea5a9708a6c2eab3017a16772d"
 dependencies = [
  "bytes",
  "futures",

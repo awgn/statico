@@ -156,8 +156,12 @@ async fn handle_connection_uring(
         let mut consumed_in_batch = 0;
         let mut loop_slice = parse_slice;
 
+        let mut headers = [const {
+            use std::mem::MaybeUninit;
+ MaybeUninit::uninit() }; 128];
+
         // 3. Parsing Loop
-        while let Some(req_len) = http_wire::request::RequestLength::decode(loop_slice) {
+        while let Ok((_, req_len)) = http_wire::request::FullRequest::decode_uninit(loop_slice, &mut headers) {
             requests_served += 1;
             if meter {
                 REQUESTS.add(1);
