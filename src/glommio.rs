@@ -33,16 +33,17 @@ pub fn run_thread(
     let meter = opts.meter;
     let tcp_nodelay = opts.tcp_nodelay;
 
-    let cpu_set = affinity::get_thread_affinity()
-        .map_err(|e| anyhow::anyhow!("Failed to get thread affinity: {}", e))?;
-    let cpu_core = cpu_set.into_iter().nth(id).unwrap();
+    let cpu_set = core_affinity::get_core_ids().ok_or(anyhow::anyhow!("Failed to get thread affinity"))?;
+    let num_cpus = cpu_set.len();
+    let cpu_core = cpu_set.into_iter().nth(id % num_cpus).unwrap();
+
     let num_entries = opts.uring_entries.next_power_of_two();
 
     // Create socket manually with SO_REUSEPORT enabled before moving into the closure
     let std_listener = create_listener(addr, opts)?;
     let raw_fd = std_listener.into_raw_fd();
 
-    let builder = LocalExecutorBuilder::new(glommio::Placement::Fixed(cpu_core))
+    let builder = LocalExecutorBuilder::new(glommio::Placement::Fixed(cpu_core.id))
         .ring_depth(num_entries as usize);
 
     let handle = builder
@@ -55,7 +56,7 @@ pub fn run_thread(
 
             info!(
                 "Thread {} listening on {} (glommio cpu-{})",
-                id, addr, cpu_core
+                id, addr, cpu_core.id
             );
 
             loop {
