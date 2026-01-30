@@ -1,8 +1,8 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use humantime::parse_duration;
 use std::str::FromStr;
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum Runtime {
     Tokio,
     TokioLocal,
