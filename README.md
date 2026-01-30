@@ -1,8 +1,8 @@
 # Statico
 
-A high-performance HTTP webserver implemented in Rust that serves static responses at the speed of light.
-Its sole purpose is to handle HTTP requests as fast as possible; as such, it is neither a full-featured 
-HTTP server nor an HTTP router, and it is not intended for production use beyond benchmarking.
+A blazing-fast HTTP server implemented in Rust that serves static responses at lightning speed. 
+Its sole purpose is to handle requests as quickly as possible; therefore, it is neither a full-featured 
+server nor a router, and is intended strictly for benchmarking.
 
 ## Features
 
