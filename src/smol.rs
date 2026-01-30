@@ -13,9 +13,9 @@ use anyhow::Result;
 use http_body_util::{BodyExt, Either, Full};
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
+use hyper::rt::{Read, ReadBufCursor, Write};
 use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
-use hyper::rt::{Read, ReadBufCursor, Write};
 use hyper::{Request, Response};
 use owo_colors::OwoColorize;
 use smol::io::{AsyncRead, AsyncWrite};
@@ -194,7 +194,8 @@ where
     }
 }
 
-#[inline] pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
+#[inline]
+pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
 where
     B: http_body::Body,
 {

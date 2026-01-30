@@ -7,15 +7,17 @@ use crate::RESPONSE_BYTES;
 use anyhow::Result;
 use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use http_body_util::Full;
-use hyper::body::Bytes;
+
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
+use std::os::unix::io::IntoRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
 
+use crate::create_listener;
 use crate::ServerConfig;
 
 pub fn run_thread(
@@ -24,27 +26,37 @@ pub fn run_thread(
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
-    use glommio::{CpuSet, LocalExecutorBuilder};
+    use glommio::LocalExecutorBuilder;
     use tracing::info;
 
     let delay = opts.delay;
     let meter = opts.meter;
     let tcp_nodelay = opts.tcp_nodelay;
 
-    let cpu_set = CpuSet::online().unwrap();
-    let cpu = cpu_set.iter().nth(id).unwrap();
+    let cpu_set = affinity::get_thread_affinity()
+        .map_err(|e| anyhow::anyhow!("Failed to get thread affinity: {}", e))?;
+    let cpu_core = cpu_set.into_iter().nth(id).unwrap();
     let num_entries = opts.uring_entries.next_power_of_two();
 
-    let builder = LocalExecutorBuilder::new(glommio::Placement::Fixed(cpu.core))
+    // Create socket manually with SO_REUSEPORT enabled before moving into the closure
+    let std_listener = create_listener(addr, opts)?;
+    let raw_fd = std_listener.into_raw_fd();
+
+    let builder = LocalExecutorBuilder::new(glommio::Placement::Fixed(cpu_core))
         .ring_depth(num_entries as usize);
 
     let handle = builder
         .name(&format!("glommio-{}", id))
         .spawn(move || async move {
-            // glommio's bind already uses SO_REUSEPORT on Linux
-            let listener = glommio::net::TcpListener::bind(addr).unwrap();
+            let listener = unsafe {
+                use std::os::unix::io::FromRawFd;
+                glommio::net::TcpListener::from_raw_fd(raw_fd)
+            };
 
-            info!("Thread {} listening on {} (glommio)", id, addr);
+            info!(
+                "Thread {} listening on {} (glommio cpu-{})",
+                id, addr, cpu_core
+            );
 
             loop {
                 let stream = match listener.accept().await {
@@ -88,107 +100,128 @@ async fn handle_connection_glommio(
     meter: bool,
     delay: Option<Duration>,
 ) -> Result<usize> {
-    use http_wire::{WireDecode, WireEncode};
+    use http_wire::WireDecode;
 
     if http2 {
         return Err(anyhow::anyhow!("HTTP/2 not supported with glommio"));
     }
 
-    // Pre-calculate the static response once.
-    let response_bytes = match build_response(config.clone()).await {
-        Ok(res) => match res.encode() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(_) => return Ok(0),
-        },
-        Err(_) => return Ok(0),
-    };
+    let response_bytes = build_response_simple(&config).await?;
 
-    let mut read_buf = vec![0u8; 16384];
-    let mut conn_buf = Vec::with_capacity(32768);
+    // Single buffer strategy for maximum performance:
+    // - In the common case (complete request in one read), we parse directly with zero copies
+    // - Only compact when we have leftover data from incomplete requests (rare case)
+    // - Glommio's read() accepts a slice, so we can read directly into spare capacity without unsafe tricks
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let mut parsed = 0; // Number of bytes already parsed/consumed
     let mut requests_served = 0;
-    let mut buf_processed = 0;
-    let response_buf = response_bytes;
 
     loop {
-        let n = match stream.read(&mut read_buf).await {
-            Ok(0) => break, // EOF
+        // FAST PATH: If we've consumed all data, reset the buffer (zero-cost operation)
+        if parsed == buf.len() && parsed > 0 {
+            unsafe {
+                buf.set_len(0);
+            }
+            parsed = 0;
+        }
+        // SLOW PATH: If we have many dead bytes at the beginning, compact the buffer
+        // This only happens when requests are split across multiple reads (rare)
+        else if parsed > 4096 {
+            buf.copy_within(parsed.., 0);
+            unsafe {
+                buf.set_len(buf.len() - parsed);
+            }
+            parsed = 0;
+        }
+
+        // Ensure we have enough spare capacity for reading
+        // Only reserve if needed to avoid unnecessary allocations in the common case
+        let current_len = buf.len();
+        if buf.capacity() - current_len < 4096 {
+            buf.reserve(4096);
+        }
+
+        // Read directly into the buffer's spare capacity using a mutable slice
+        // Glommio accepts &mut [u8], which is simpler than monoio/tokio_uring's ownership model
+        // We temporarily extend the buffer to its capacity, read into the spare portion, then adjust
+        let capacity = buf.capacity();
+        unsafe {
+            buf.set_len(capacity);
+        }
+
+        let n = match stream.read(&mut buf[current_len..]).await {
+            Ok(0) => break, // Connection closed (EOF)
             Ok(n) => n,
-            Err(e) => return Err(anyhow::Error::new(e)),
+            Err(e) => {
+                unsafe {
+                    buf.set_len(current_len);
+                }
+                return Err(anyhow::Error::new(e));
+            }
         };
 
-        let parse_slice: &[u8];
-        let mut using_internal = false;
-
-        if conn_buf.is_empty() {
-            parse_slice = &read_buf[..n];
-        } else {
-            if conn_buf.len() + n > conn_buf.capacity() {
-                if buf_processed > 0 {
-                    conn_buf.drain(..buf_processed);
-                    buf_processed = 0;
-                }
-            }
-            conn_buf.extend_from_slice(&read_buf[..n]);
-            parse_slice = &conn_buf[buf_processed..];
-            using_internal = true;
+        // Update the buffer's length to include only the newly read data
+        unsafe {
+            buf.set_len(current_len + n);
         }
 
-        let mut consumed_in_batch = 0;
-        let mut loop_slice = parse_slice;
-
+        // Parse all complete requests in the buffer
+        // This handles HTTP pipelining: multiple requests in a single read
         let mut headers = [const { MaybeUninit::uninit() }; 128];
-        while let Ok((_, req_len)) = http_wire::request::FullRequest::decode_uninit(loop_slice, &mut headers) {
-            requests_served += 1;
-            if meter {
-                REQUESTS.add(1);
-                REQUEST_BYTES.add(req_len);
-                RESPONSES.add(1);
-                RESPONSE_BYTES.add(response_buf.len());
-            }
 
-            if let Some(delay) = delay {
-                execute_delay(delay).await;
-            }
+        loop {
+            match http_wire::request::FullRequest::decode_uninit(&buf[parsed..], &mut headers) {
+                Ok((_, req_len)) => {
+                    requests_served += 1;
+                    parsed += req_len;
 
-            stream.write_all(&response_buf).await?;
+                    if meter {
+                        REQUESTS.add(1);
+                        REQUEST_BYTES.add(req_len);
+                    }
 
-            consumed_in_batch += req_len;
+                    if let Some(d) = delay {
+                        execute_delay(d).await;
+                    }
 
-            if consumed_in_batch < loop_slice.len() {
-                loop_slice = &parse_slice[consumed_in_batch..];
-            } else {
-                break;
+                    // Write the pre-encoded response
+                    stream.write_all(&response_bytes).await?;
+
+                    if meter {
+                        RESPONSES.add(1);
+                        RESPONSE_BYTES.add(response_bytes.len());
+                    }
+                }
+                Err(_) => break, // Incomplete request or end of batch
             }
         }
 
-        if using_internal {
-            buf_processed += consumed_in_batch;
-            if buf_processed == conn_buf.len() {
-                conn_buf.clear();
-                buf_processed = 0;
-            } else if buf_processed > 4096 && buf_processed > conn_buf.len() / 2 {
-                conn_buf.drain(..buf_processed);
-                buf_processed = 0;
-            }
-        } else if consumed_in_batch < n {
-            conn_buf.extend_from_slice(&read_buf[consumed_in_batch..n]);
-            buf_processed = 0;
-        }
+        // Loop continues: common case is parsed == buf.len(), so fast path activates on next iteration
     }
 
     Ok(requests_served)
 }
 
-async fn build_response(config: Arc<ServerConfig>) -> Result<Response<Full<Bytes>>> {
+/// Build a static HTTP response and encode it to bytes once at connection start.
+/// This pre-encodes the response to avoid re-encoding on every request, significantly
+/// improving performance for static responses.
+async fn build_response_simple(config: &ServerConfig) -> Result<Vec<u8>> {
+    use http_wire::WireEncode;
+
+    // Build the HTTP response with configured status code
     let mut builder = Response::builder().status(config.status);
 
+    // Add all configured headers
     for (k, v) in &config.headers {
         builder = builder.header(k, v);
     }
 
+    // Add Content-Length header if body is present
     if !config.body.is_empty() {
         builder = builder.header(CONTENT_LENGTH, config.body.len());
     }
 
-    Ok(builder.body(Full::new(config.body.clone()))?)
+    // Build the response and encode it to wire format (HTTP/1.1 bytes)
+    let res = builder.body(Full::new(config.body.clone()))?;
+    Ok(res.encode()?.to_vec())
 }
