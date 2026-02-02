@@ -5,6 +5,7 @@ use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
+use futures::stream::{select_all, StreamExt, unfold};
 use http_body_util::Full;
 
 use hyper::header::CONTENT_LENGTH;
@@ -25,7 +26,7 @@ use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
-    addr: SocketAddr,
+    addrs: Vec<SocketAddr>,
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
@@ -53,20 +54,51 @@ pub fn run_thread(
     let mut rt = builder.build().unwrap();
 
     rt.block_on(async move {
-        // Create socket manually with SO_REUSEPORT enabled
-        let std_listener = create_listener(addr, opts)?;
-        let Ok(listener) = monoio::net::TcpListener::from_std(std_listener) else {
-            panic!("Failed to create monoio listener");
-        };
+        
+        // Create multiple sockets manually with SO_REUSEPORT enabled
+        let mut listeners = Vec::new();
+        for addr in &addrs {
+            let std_listener = match create_listener(*addr, opts) {
+                Ok(l) => l,
+                Err(e) => {
+                    error!("Failed to create listener for {}: {}", addr, e);
+                    return;
+                }
+            };
+            let Ok(listener) = monoio::net::TcpListener::from_std(std_listener) else {
+                panic!("Failed to create monoio listener");
+            };
+            listeners.push(listener);
+        }
 
-        info!("Thread {} listening on {} (monoio)", id, addr);
+        info!("Thread {} listening on {:?} (monoio)", id, addrs);
+
+        // Convert each listener into a stream using unfold
+        let streams: Vec<_> = listeners
+            .into_iter()
+            .map(|listener| {
+                Box::pin(unfold(listener, |l| async {
+                    match l.accept().await {
+                        Ok((stream, addr)) => Some((Ok((stream, addr)), l)),
+                        Err(e) => Some((Err(e), l)),
+                    }
+                }))
+            })
+            .collect();
+
+        // Combine all listener streams
+        let mut all_listeners = select_all(streams);
 
         loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(e) => {
+            let (stream, _) = match all_listeners.next().await {
+                Some(Ok(s)) => s,
+                Some(Err(e)) => {
                     error!("Thread {} accept error: {}", id, e);
                     continue;
+                }
+                None => {
+                    error!("Thread {} all listeners closed", id);
+                    break;
                 }
             };
 
@@ -80,7 +112,9 @@ pub fn run_thread(
                 }
             });
         }
-    })
+    });
+
+    Ok(())
 }
 
 async fn handle_connection_monoio(

@@ -5,8 +5,8 @@ use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
+use futures::stream::{select_all, StreamExt};
 use http_body_util::Full;
-
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
 use std::net::SocketAddr;
@@ -19,7 +19,7 @@ use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
-    addr: SocketAddr,
+    addrs: Vec<SocketAddr>,
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
@@ -46,37 +46,69 @@ pub fn run_thread(
         .entries(num_entries) // Large ring size is critical for throughput
         .uring_builder(&uring)
         .start(async move {
-            // Create socket manually with SO_REUSEPORT enabled
-            let std_listener = create_listener(addr, opts)?;
-            let listener = tokio_uring::net::TcpListener::from_std(std_listener);
-            info!(
-                "Thread {} listening on {} (tokio_uring, entries: {}, sqpoll: {:?})",
-                id, addr, opts.uring_entries, opts.uring_sqpoll
-            );
-
-            loop {
-                let (stream, _) = match listener.accept().await {
-                    Ok(s) => s,
+            // Create multiple listeners for each address
+            let mut listeners = Vec::new();
+            for addr in &addrs {
+                let std_listener = match create_listener(*addr, opts) {
+                    Ok(l) => l,
                     Err(e) => {
-                        error!("Thread {} accept error: {}", id, e);
-                        continue;
+                        error!("Failed to create listener for {}: {}", addr, e);
+                        return;
                     }
                 };
-
-                let config = config.clone();
-
-                // info!("Accepted a new connection...");
-
-                // Spawn task to handle the connection with io_uring
-                tokio_uring::spawn(async move {
-                    if let Err(e) =
-                        handle_connection_uring(stream, config, false, meter, delay).await
-                    {
-                        error!("Error handling tokio_uring connection: {}", e);
-                    }
-                });
+                listeners.push(tokio_uring::net::TcpListener::from_std(std_listener));
             }
-        })
+
+            info!(
+                "Thread {} listening on {:?} (tokio_uring, entries: {}, sqpoll: {:?})",
+                id, addrs, opts.uring_entries, opts.uring_sqpoll
+            );
+
+            // Convert each listener into a stream using unfold
+            let streams: Vec<_> = listeners
+                .into_iter()
+                .map(|listener| {
+                    Box::pin(futures::stream::unfold(listener, |l| async move {
+                        match l.accept().await {
+                            Ok((socket, _)) => Some((Ok(socket), l)),
+                            Err(e) => {
+                                error!("Accept error: {}", e);
+                                // Continue accepting despite errors
+                                Some((Err(e), l))
+                            }
+                        }
+                    }))
+                })
+                .collect();
+
+            let mut all_listeners = select_all(streams);
+
+            loop {
+                match all_listeners.next().await {
+                    Some(Ok(socket)) => {
+                        let config = config.clone();
+
+                        // Spawn task to handle the connection with io_uring
+                        tokio_uring::spawn(async move {
+                            if let Err(e) =
+                                handle_connection_uring(socket, config, false, meter, delay).await
+                            {
+                                error!("Error handling tokio_uring connection: {}", e);
+                            }
+                        });
+                    }
+                    Some(Err(e)) => {
+                        error!("Thread {} accept error: {}", id, e);
+                    }
+                    None => {
+                        error!("Thread {} all listeners closed", id);
+                        break;
+                    }
+                }
+            }
+        });
+
+    Ok(())
 }
 
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]

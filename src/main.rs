@@ -16,7 +16,7 @@ mod glommio;
 mod smol;
 
 use crate::options::Options;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
+use anyhow::anyhow;
 
 /// Configuration shared across threads
 #[derive(Clone)]
@@ -54,6 +55,39 @@ fn main() -> Result<()> {
 
     let opts = Options::parse();
 
+    // ... and balance them to threads
+
+    let chunks = balance_ports(&opts.ports.0, opts.threads, opts.bind_all);
+
+    println!("ports chunked: {:?}", chunks);
+
+    // Build SocketAddr from address option
+    let addrs: Vec<Vec<SocketAddr>> = match &opts.address {
+        Some(address) => chunks
+            .iter()
+            .map(|slice| {
+                slice
+                    .iter()
+                    .map(|&port| {
+                        let addr_with_port = format!("{}:{}", address, port);
+                        addr_with_port
+                            .parse()
+                            .with_context(|| format!("Invalid address: {}", addr_with_port))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => chunks
+            .iter()
+            .map(|slice| {
+                slice
+                    .iter()
+                    .map(|&port| SocketAddr::from(([0, 0, 0, 0], port)))
+                    .collect()
+            })
+            .collect(),
+    };
+
     // Parse headers
     let mut parsed_headers = Vec::new();
     for h in &opts.header {
@@ -74,19 +108,6 @@ fn main() -> Result<()> {
         body: body_content,
         headers: parsed_headers,
     });
-
-    // Build SocketAddr from address option
-    let addr: SocketAddr = match &opts.address {
-        Some(address) => {
-            let addr_with_port = format!("{}:{}", address, opts.port);
-            addr_with_port
-                .parse()
-                .with_context(|| format!("Invalid address: {}", addr_with_port))?
-        }
-        None => SocketAddr::from(([0, 0, 0, 0], opts.port)),
-    };
-
-    info!("Starting server on {} with {} threads", addr, opts.threads);
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     if matches!(opts.runtime, crate::options::Runtime::TokioUring) && opts.http2 {
@@ -123,8 +144,11 @@ fn main() -> Result<()> {
     let mut handles = Vec::new();
 
     for id in 0..args.threads {
+        info!("Starting server on ports {:?}", chunks[id]);
+
         let config = config.clone();
         let args = args.clone();
+        let addr = addrs[id].clone();
 
         let handle = thread::spawn(move || {
             if let Err(e) = run_thread(id, addr, config, &args) {
@@ -172,6 +196,54 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn balance_ports(ports: &Vec<u16>, num_threads: usize, bind_all: bool) -> Vec<Vec<u16>> {
+    let mut result = Vec::with_capacity(num_threads);
+    if bind_all {
+        for _ in 0..num_threads {
+            result.push(ports.clone());
+        }
+    } else {
+        // expand ports...
+        let ports = {
+            let mul = num_threads / ports.len();
+            if mul > 1 {
+                ports.repeat(num_threads / ports.len())
+            } else {
+                ports.clone()
+            }
+        };
+
+        // ... and balance them across threads
+        let chunks = chunks_balanced(&ports, num_threads);
+        for chunk in chunks {
+            result.push(chunk.to_vec());
+        }
+    }
+
+    result
+}
+
+fn chunks_balanced<T>(slice: &[T], chunks: usize) -> Vec<&[T]> {
+    let len = slice.len();
+    // Base size for every chunk
+    let base_size = len / chunks;
+    // Remainder to distribute among the first chunks
+    let remainder = len % chunks;
+
+    let mut result = Vec::with_capacity(chunks);
+    let mut offset = 0;
+
+    for i in 0..chunks {
+        // Add 1 to size if we are within the remainder count
+        let size = base_size + if i < remainder { 1 } else { 0 };
+
+        result.push(&slice[offset..offset + size]);
+        offset += size;
+    }
+
+    result
+}
+
 pub fn load_body_content(body: Option<&str>) -> Result<Bytes> {
     match body {
         Some(content) if content.starts_with('@') => {
@@ -210,21 +282,15 @@ pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::Tcp
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
 
-    // Enable SO_REUSEPORT on all Unix systems that support it
+    // Always enable SO_REUSEADDR first
+    socket.set_reuse_address(true)?;
+
+    // Enable SO_REUSEPORT on Unix systems that support it
     #[cfg(unix)]
     {
         if let Err(e) = socket.set_reuse_port(true) {
-            use tracing::warn;
-
-            warn!("SO_REUSEPORT failed: {}. Falling back to SO_REUSEADDR", e);
-            socket.set_reuse_address(true)?;
+            warn!("SO_REUSEPORT failed: {}. Continuing with SO_REUSEADDR only", e);
         }
-    }
-
-    // On non-Unix systems, use SO_REUSEADDR
-    #[cfg(not(unix))]
-    {
-        socket.set_reuse_address(true)?;
     }
 
     // Apply TCP_NODELAY if requested
@@ -274,7 +340,7 @@ fn print_final_report() {
 
 fn run_thread(
     id: usize,
-    addr: SocketAddr,
+    addr: Vec<SocketAddr>,
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {

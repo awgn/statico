@@ -5,14 +5,15 @@ use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
-use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
+use futures::stream::{select_all, unfold, StreamExt};
+use futures_lite::{AsyncReadExt, AsyncWriteExt};
 use http_body_util::Full;
 
 use hyper::header::CONTENT_LENGTH;
 use hyper::Response;
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
@@ -22,7 +23,7 @@ use crate::ServerConfig;
 
 pub fn run_thread(
     id: usize,
-    addr: SocketAddr,
+    addrs: Vec<SocketAddr>,
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
@@ -39,9 +40,12 @@ pub fn run_thread(
 
     let num_entries = opts.uring_entries.next_power_of_two();
 
-    // Create socket manually with SO_REUSEPORT enabled before moving into the closure
-    let std_listener = create_listener(addr, opts)?;
-    let raw_fd = std_listener.into_raw_fd();
+    // Create multiple sockets manually with SO_REUSEPORT enabled before moving into the closure
+    let mut raw_fds = Vec::new();
+    for addr in &addrs {
+        let std_listener = create_listener(*addr, opts)?;
+        raw_fds.push(std_listener.into_raw_fd());
+    }
 
     let builder = LocalExecutorBuilder::new(glommio::Placement::Fixed(cpu_core.id))
         .ring_depth(num_entries as usize);
@@ -49,22 +53,37 @@ pub fn run_thread(
     let handle = builder
         .name(&format!("glommio-{}", id))
         .spawn(move || async move {
-            let listener = unsafe {
-                use std::os::unix::io::FromRawFd;
-                glommio::net::TcpListener::from_raw_fd(raw_fd)
-            };
+            // Create glommio listeners from raw fds
+            let listeners: Vec<glommio::net::TcpListener> = raw_fds
+                .into_iter()
+                .map(|fd| unsafe { glommio::net::TcpListener::from_raw_fd(fd) })
+                .collect();
+
+            // Combine all listeners into a single stream
+            let mut all_listeners = select_all(listeners.into_iter().map(|l: glommio::net::TcpListener| {
+                Box::pin(unfold(l, |listener: glommio::net::TcpListener| async move {
+                    match listener.accept().await {
+                        Ok(stream) => Some((Ok(stream), listener)),
+                        Err(e) => Some((Err(e), listener)),
+                    }
+                }))
+            }));
 
             info!(
-                "Thread {} listening on {} (glommio cpu-{})",
-                id, addr, cpu_core.id
+                "Thread {} listening on {:?} (glommio cpu-{})",
+                id, addrs, cpu_core.id
             );
 
             loop {
-                let stream = match listener.accept().await {
-                    Ok(s) => s,
-                    Err(e) => {
+                let stream: glommio::net::TcpStream = match all_listeners.next().await {
+                    Some(Ok(s)) => s,
+                    Some(Err(e)) => {
                         error!("Thread {} accept error: {}", id, e);
                         continue;
+                    }
+                    None => {
+                        error!("Thread {} all listeners closed", id);
+                        break;
                     }
                 };
 
