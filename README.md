@@ -85,7 +85,7 @@ cargo build --release --features io_uring
 |--------|-------------|
 | `-t, --threads <THREADS>` | Number of worker threads to spawn (default: number of CPUs) |
 | `-p, --ports <PORTS>` | Ports to listen on, supports ranges (e.g., `8080`, `8080,8100-8200`) (default: 8080) |
-| `--bind-all` | Each thread binds to all specified ports (default: each thread binds to one port) |
+| `--bind-all` | Each thread binds to all specified ports (default: ports are balanced across threads) |
 | `-a, --address <ADDRESS>` | Address to listen on. If not specified, listen on all interfaces |
 | `-s, --status <STATUS>` | HTTP status code to return (default: 200) |
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
