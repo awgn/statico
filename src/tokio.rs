@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use futures::stream::select_all;
+use futures::stream::{select_all, unfold};
 use http_body_util::BodyExt;
 use http_body_util::Either;
 use http_body_util::Full;
@@ -11,7 +11,6 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use owo_colors::OwoColorize;
-use tokio_stream::wrappers::TcpListenerStream;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -52,13 +51,20 @@ async fn tokio_srv(
 
     // Create futures
 
-    let mut all_listeners = select_all(listeners.into_iter().map(|l| TcpListenerStream::new(l)).collect::<Vec<_>>());
+    let mut all_listeners = select_all(listeners.into_iter().map(|l| {
+        Box::pin(unfold(l, |listener| async move {
+            match listener.accept().await {
+                Ok((socket, _)) => Some((Ok(socket), listener)),
+                Err(e) => Some((Err(e), listener)),
+            }
+        }))
+    }));
 
     loop {
         tokio::select! {
-            Some(incoming) = all_listeners.next() => {
+            incoming = all_listeners.next() => {
                 match incoming {
-                    Ok(socket) => {
+                    Some(Ok(socket)) => {
                         let io = TokioIo::new(socket);
                         let config = config.clone();
                         let use_http2 = opts.http2;
@@ -177,13 +183,18 @@ async fn tokio_srv(
                             tokio::task::spawn(task);
                         }
                     },
-                    Err(e) => {
+                    Some(Err(e)) => {
                         error!("Thread {} accept error on listener: {}", id, e);
+                    }
+                    None => {
+                        error!("Thread {} all listeners closed", id);
+                        break;
                     }
                 }
             }
         }
     }
+    Ok(())
 }
 
 pub fn run_thread(
