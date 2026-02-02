@@ -1,6 +1,52 @@
 use clap::{Parser, ValueEnum};
 use humantime::parse_duration;
+use number_range::NumberRangeOptions;
+use std::ops::Deref;
 use std::str::FromStr;
+use std::fmt::Display;
+
+#[derive(Clone, Debug)]
+pub struct Ports(pub Vec<u16>);
+
+impl FromStr for Ports {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let ports: Vec<u16> = NumberRangeOptions::<u16>::new()
+            .with_list_sep(',')
+            .with_range_sep('-')
+            .parse(s)
+            .map_err(|e| format!("Invalid port range: {}", e))?
+            .collect();
+
+        if ports.is_empty() {
+            return Err("No ports specified".to_string());
+        }
+
+        Ok(Ports(ports))
+    }
+}
+
+impl Default for Ports {
+    fn default() -> Self {
+        Ports(vec![8080])
+    }
+}
+
+impl Display for Ports {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ports_str: Vec<String> = self.0.iter().map(|p| p.to_string()).collect();
+        write!(f, "{}", ports_str.join(","))
+    }
+}
+
+impl Deref for Ports {
+    type Target = Vec<u16>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum Runtime {
@@ -43,9 +89,13 @@ pub struct Options {
     #[arg(short, long, default_value_t = num_cpus::get())]
     pub threads: usize,
 
-    /// Port to listen on
-    #[arg(short, long, default_value_t = 8080)]
-    pub port: u16,
+    /// Ports to listen on (e.g 8080,8100-8200)
+    #[arg(short = 'p', long, default_value_t = Ports::default())]
+    pub ports: Ports,
+
+    /// Threads bind to all ports
+    #[arg(long)]
+    pub bind_all: bool,
 
     /// Address to listen on. If not specified, listen on all interfaces.
     #[arg(short, long)]

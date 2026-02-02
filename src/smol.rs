@@ -10,6 +10,8 @@ use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 
 use anyhow::Result;
+use futures::stream::{select_all, unfold};
+use futures::StreamExt;
 use http_body_util::{BodyExt, Either, Full};
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
@@ -28,24 +30,43 @@ use tracing::{error, info};
 
 pub fn run_thread(
     id: usize,
-    addr: SocketAddr,
+    addrs: Vec<SocketAddr>,
     config: Arc<ServerConfig>,
     opts: &Options,
 ) -> Result<()> {
-    info!("Thread {} listening on {} (smol-hyper)", id, addr);
+    info!("Thread {} listening on {:?} (smol-hyper)", id, addrs);
 
-    let std_listener = crate::create_listener(addr, opts)?;
-    let listener = smol::net::TcpListener::from(smol::Async::new(std_listener)?);
+    // Create multiple listeners for each address
+    let mut listeners = Vec::new();
+    for addr in &addrs {
+        let std_listener = crate::create_listener(*addr, opts)?;
+        listeners.push(smol::net::TcpListener::from(smol::Async::new(std_listener)?));
+    }
+
     let ex = std::rc::Rc::new(smol::LocalExecutor::new());
     let spawn_ex = ex.clone();
 
     smol::block_on(ex.run(async move {
+        // Combine all listeners into a single stream
+        let mut all_listeners = select_all(listeners.into_iter().map(|l| {
+            Box::pin(unfold(l, |listener| async move {
+                match listener.accept().await {
+                    Ok((s, _)) => Some((Ok(s), listener)),
+                    Err(e) => Some((Err(e), listener)),
+                }
+            }))
+        }));
+
         loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(e) => {
+            let stream = match all_listeners.next().await {
+                Some(Ok(s)) => s,
+                Some(Err(e)) => {
                     error!("Thread {} accept error: {}", id, e);
                     continue;
+                }
+                None => {
+                    error!("Thread {} all listeners closed", id);
+                    break;
                 }
             };
 
@@ -178,7 +199,9 @@ pub fn run_thread(
                 })
                 .detach();
         }
-    }))
+    }));
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
