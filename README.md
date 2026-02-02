@@ -84,7 +84,8 @@ cargo build --release --features io_uring
 | Option | Description |
 |--------|-------------|
 | `-t, --threads <THREADS>` | Number of worker threads to spawn (default: number of CPUs) |
-| `-p, --port <PORT>` | Port to listen on (default: 8080) |
+| `-p, --ports <PORTS>` | Ports to listen on, supports ranges (e.g., `8080`, `8080,8100-8200`) (default: 8080) |
+| `--bind-all` | Each thread binds to all specified ports (default: each thread binds to one port) |
 | `-a, --address <ADDRESS>` | Address to listen on. If not specified, listen on all interfaces |
 | `-s, --status <STATUS>` | HTTP status code to return (default: 200) |
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
@@ -94,7 +95,7 @@ cargo build --release --features io_uring
 | `-m, --meter` | Enable real-time metrics monitoring (requests/sec, bandwidth) |
 | `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`, `-vvvv`) |
 | `--http2` | Enable HTTP/2 (h2c) support |
-| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `tokio-uring`, `monoio`, `glommio` (default: tokio) |
+| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `smol`, `tokio-uring`, `monoio`, `glommio` (default: tokio) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -112,9 +113,28 @@ Start a server on port 8080 with default settings:
 ./target/release/statico
 ```
 
-### Custom port and threads
+### Custom ports and threads
 ```bash
-./target/release/statico --port 3000 --threads 4
+./target/release/statico --ports 3000 --threads 4
+```
+
+### Multiple ports with ranges
+```bash
+# Listen on multiple specific ports
+./target/release/statico --ports 8080,8081,8082
+
+# Listen on a range of ports
+./target/release/statico --ports 8000-8100
+
+# Combine specific ports and ranges
+./target/release/statico --ports 8080,8443,9000-9010
+```
+
+### Bind all threads to all ports
+```bash
+# By default, threads are distributed across ports (one thread per port)
+# With --bind-all, each thread binds to all ports (useful for SO_REUSEPORT load balancing)
+./target/release/statico --ports 8080,8081 --threads 4 --bind-all
 ```
 
 ### Serve custom content with headers
@@ -148,7 +168,7 @@ Start a server on port 8080 with default settings:
 # Start server with many threads for high concurrency
 ./target/release/statico \
   --threads 16 \
-  --port 8080 \
+  --ports 8080 \
   --body "OK" \
   --header "Content-Type: text/plain"
 ```
@@ -306,6 +326,14 @@ Statico supports multiple async runtimes, selectable via the `--runtime` option:
 - **tokio** (default): Multiple Single-threaded Tokio runtimes
 - **tokio-local**: Multiple Single-threaded Tokio runtimes spawning tasks on `LocalSet`.
 
+#### Alternative Runtimes
+
+- **tokio-local**: Multiple single-threaded Tokio runtimes spawning tasks on `LocalSet`
+  - Run with `--runtime tokio-local`
+
+- **smol**: Uses the smol async runtime (requires compilation with `--features smol`)
+  - Run with `--runtime smol`
+
 #### io_uring-based Runtimes (Linux only)
 These runtimes provide experimental support for Linux's io_uring interface and may offer significantly better performance:
 
@@ -326,7 +354,7 @@ When using io_uring-based runtimes, you can configure:
 - Submission queue size with `--uring-entries` (default: 4096)
 - Kernel-side polling with `--uring-sqpoll <timeout_ms>`
 
-Note: io_uring runtimes currently provide a simplified implementation (only HTTP/1.1 is supported)
+Note: io_uring and smol runtimes currently provide a simplified implementation (only HTTP/1.1 is supported)
 
 ## Use Cases
 
