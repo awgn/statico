@@ -1,18 +1,16 @@
 # Statico
 
-A blazing-fast HTTP server implemented in Rust that serves static responses at lightning speed. 
-Its sole purpose is to handle requests as quickly as possible; therefore, it is neither a full-featured 
-server nor a router, and is intended strictly for benchmarking.
+A blazing-fast HTTP server in Rust for serving static responses. Designed strictly for benchmarking with minimal overhead.
 
 ## Features
 
-- **Multi-threaded**: Configurable number of worker threads
-- **Single-threaded Tokio runtime per thread**: Each worker thread runs its own Tokio current-thread runtime
-- **SO_REUSEPORT**: Multiple threads can bind to the same port for load balancing 
-- **Configurable responses**: Set custom HTTP status codes, headers, and response body
-- **File-based responses**: Load response body from files using `@filename` syntax
-- **Optional io_uring support**: Experimental support for io_uring on Linux (compile-time feature)
-- **Cross-platform**: Works on Linux, macOS, Windows, and other Unix-like systems
+- **Multi-threaded** with configurable worker threads
+- **Per-thread Tokio runtime** (single-threaded) for reduced context switching
+- **SO_REUSEPORT** for kernel-level load balancing across threads
+- **Configurable responses**: custom status codes, headers, and body
+- **File-based responses** via `@filename` syntax
+- **Optional io_uring support** on Linux (compile-time feature)
+- **Cross-platform**: Linux, macOS, Windows
 
 ## Performance
 
@@ -33,44 +31,33 @@ The following benchmark compares Statico against other popular HTTP servers and 
 | Axum (Rust) | 121,680 | 224,712 | 414,640 |
 | actix-web (Rust) | 213,756 | 343,037 | 798,809 |
 
-### Notes on the benchmark setup
+**Key observations:**
+- Statico with io_uring achieves **1M+ req/s at 4 threads** with near-linear scaling
+- Standard Statico and nginx perform similarly single-threaded, but Statico scales better
+- Outperforms Axum, actix-web, and Go's fasthttp significantly at higher thread counts
 
-- **nginx**: Configured for maximum performance with logging disabled, CPU pinning, and returning a response directly from an in-memory buffer (no disk I/O).
-- **HAProxy**: Same optimizations as nginx — no logging, CPU pinning, in-memory response.
-- **Go net/http**: A minimal HTTP server using Go's standard library, always returning `200 OK`.
-- **Go fasthttp**: Same as net/http but using the high-performance [fasthttp](https://github.com/valyala/fasthttp) library.
-- **Axum**: A Rust web framework example using a single multi-threaded Tokio runtime (with 1, 2, or 4 worker threads).
-- **actix-web**: A Rust web framework example with configurable thread count (with 1, 2, or 4 threads).
-
-### Key observations
-
-1. **Statico with io_uring scales exceptionally well** — at 4 threads it achieves over 1.1 million req/s, outperforming all other solutions by a significant margin.
-2. **Single-thread performance**: Standard Statico and nginx perform similarly (~280k req/s), but Statico pulls ahead as thread count increases due to better multi-core scaling.
-3. **Multi-thread scaling**: Statico with io_uring shows near-linear scaling (2.1x at 2 threads, 4.2x at 4 threads), while nginx and others show diminishing returns.
-4. **Rust frameworks comparison**: Statico outperforms both Axum and actix-web significantly, demonstrating the benefit of its specialized architecture (per-thread Tokio runtimes + SO_REUSEPORT).
-5. **Go comparison**: Even fasthttp, known for its performance, reaches only ~53% of Statico+io_uring throughput at 4 threads.
-
-**Note**: The "statico + io_uring" results in the benchmark refer to the `tokio-uring` runtime (enabled with `--runtime tokio-uring`). Statico also supports other io_uring-based runtimes such as `monoio` and `glommio`, which may show even better performance figures. An updated benchmark will be published once the codebase reaches sufficient stability.
+*Note: "statico + io_uring" uses `tokio-uring`. Other io_uring runtimes (`monoio`, `glommio`) may show even better performance.*
 
 ### Why is Statico fast?
 
-- Minimal request processing overhead
-- Efficient multi-threading with SO_REUSEPORT load balancing
-- Single-threaded Tokio runtimes reduce context switching
-- Zero-allocation response serving (responses are pre-built and cached)
-- File content loaded once at startup for optimal performance
-- Use io_uring, achieving up to 40% better performance than the basic version on Linux
+- Zero-allocation response serving (pre-built cached responses)
+- Single-threaded Tokio runtimes per worker reduce contention across cores 
+- SO_REUSEPORT for efficient kernel load balancing
+- File content loaded once at startup
+- io_uring support on Linux (up to 40% faster)
 
 ## Building
 
-### Standard build:
 ```bash
+# Standard build
 cargo build --release
-```
 
-### With io_uring support (Linux only):
-```bash
-cargo build --release --features io_uring
+# With specific runtimes (each requires its own feature)
+cargo build --release --features tokio_uring  # tokio-uring runtime
+cargo build --release --features monoio       # monoio runtime
+cargo build --release --features glommio      # glommio runtime
+cargo build --release --features smol         # smol runtime
+cargo build --release --all-features          # enable all runtimes 
 ```
 
 ## Usage
@@ -79,7 +66,7 @@ cargo build --release --features io_uring
 ./target/release/statico [OPTIONS]
 ```
 
-### Command Line Options
+### Options
 
 | Option | Description |
 |--------|-------------|
@@ -107,278 +94,78 @@ cargo build --release --features io_uring
 
 ## Examples
 
-### Basic usage
-Start a server on port 8080 with default settings:
 ```bash
+# Basic server on port 8080
 ./target/release/statico
-```
 
-### Custom ports and threads
-```bash
+# Custom port and threads
 ./target/release/statico --ports 3000 --threads 4
-```
 
-### Multiple ports with ranges
-```bash
-# Listen on multiple specific ports
-./target/release/statico --ports 8080,8081,8082
-
-# Listen on a range of ports
-./target/release/statico --ports 8000-8100
-
-# Combine specific ports and ranges
+# Multiple ports and ranges
 ./target/release/statico --ports 8080,8443,9000-9010
-```
 
-### Bind all threads to all ports
-```bash
-# By default, threads are distributed across ports (one thread per port)
-# With --bind-all, each thread binds to all ports (useful for SO_REUSEPORT load balancing)
+# Bind all threads to all ports (SO_REUSEPORT load balancing)
 ./target/release/statico --ports 8080,8081 --threads 4 --bind-all
-```
 
-### Serve custom content with headers
-```bash
-./target/release/statico \
-  --status 201 \
-  --body "Hello, World!" \
-  --header "Content-Type: text/plain" \
-  --header "X-Custom-Header: MyValue"
-```
+# Custom response with headers
+./target/release/statico --status 201 --body "Hello" -H "Content-Type: text/plain"
 
-### Serve JSON response
-```bash
-./target/release/statico \
-  --status 200 \
-  --body '{"message": "Hello from Statico!", "timestamp": "2024-01-01T00:00:00Z"}' \
-  --header "Content-Type: application/json" \
-  --header "Cache-Control: no-cache"
-```
+# Multiple headers
+./target/release/statico -H "Content-Type: application/json" -H "X-API-Key: secret"
 
-### Error response simulation
-```bash
-./target/release/statico \
-  --status 404 \
-  --body "Not Found" \
-  --header "Content-Type: text/plain"
-```
+# JSON response
+./target/release/statico -b '{"msg": "hi"}' -H "Content-Type: application/json"
 
-### Load testing setup
-```bash
-# Start server with many threads for high concurrency
-./target/release/statico \
-  --threads 16 \
-  --ports 8080 \
-  --body "OK" \
-  --header "Content-Type: text/plain"
-```
+# Serve from file
+./target/release/statico --body @response.json -H "Content-Type: application/json"
 
-### With io_uring runtimes (Linux only)
-```bash
-# Using tokio-uring (requires compilation with --features tokio_uring)
+# io_uring runtimes (Linux only, requires feature flags)
 ./target/release/statico --runtime tokio-uring --threads 8
-
-# Using monoio (requires compilation with --features monoio)
 ./target/release/statico --runtime monoio --threads 8
-
-# Using glommio (requires compilation with --features glommio)
 ./target/release/statico --runtime glommio --threads 8
-```
 
-### With response delay (latency simulation)
-```bash
-# Add 100ms delay before each response
-./target/release/statico --delay 100ms --body "Delayed response"
+# Add delay (latency simulation)
+./target/release/statico --delay 100ms
 
-# Add 1 second delay
-./target/release/statico --delay 1s
-```
+# Delay body only (headers sent immediately)
+./target/release/statico --body-delay 500ms
 
-### Verbose mode (request/response logging)
-
-The `-v` flag controls verbosity level. Each additional `v` increases the detail:
-
-| Level | Flag | Description |
-|-------|------|-------------|
-| 0 | (none) | No output |
-| 1 | `-v` | Request/status line only |
-| 2 | `-vv` | Request/status line + headers |
-| 3 | `-vvv` | Request/status line + headers + body (non-printable as hex) |
-| 4+ | `-vvvv` | Request/status line + headers + body (full hexdump) |
-
-When displaying the body, printable ASCII characters are shown as-is, while non-printable bytes are displayed as reversed hex codes.
-
-```bash
-# No request/response output
-./target/release/statico
-
-# Show request/status line only
-./target/release/statico -v
-
-# Show request/status line + headers
+# Verbose logging (levels: -v, -vv, -vvv, -vvvv)
 ./target/release/statico -vv
 
-# Show request/status line + headers + body (non-printable as hex)
-./target/release/statico -vvv
-
-# Show request/status line + headers + body (full hexdump)
-./target/release/statico -vvvv
-```
-
-#### Example: Request with non-printable bytes in body
-
-When a request body contains non-printable characters (e.g., binary data), they are displayed differently depending on verbosity level.
-
-```bash
-# Start server with verbose body output
-./target/release/statico -vvv --body "OK"
-
-# In another terminal, send a request with binary data:
-curl -X POST --data $'Hello\x00World\x01!' http://localhost:8080
-```
-
-Output with `-vvv` (inline hex for non-printable bytes):
-```
-↩ request:
-POST / HTTP/1.1
-host: localhost:8080
-content-type: application/x-www-form-urlencoded
-
-Hello00World01!
-```
-
-The `00` and `01` are the hex representations of the null byte (`\x00`) and SOH (`\x01`), displayed with reversed colors to distinguish them from regular text.
-
-Output with `-vvvv` (full hexdump format):
-```
-↩ request:
-POST / HTTP/1.1
-host: localhost:8080
-content-type: application/x-www-form-urlencoded
-
-00000000  48 65 6c 6c 6f 00 57 6f  72 6c 64 01 21           |Hello.World.!|
-```
-
-The hexdump format shows byte offsets, hex values, and ASCII representation (with `.` for non-printable characters).
-
-### Serve content from files
-```bash
-# Serve JSON response from file
-./target/release/statico \
-  --body @response.json \
-  --header "Content-Type: application/json"
-
-# Serve HTML page from file
-./target/release/statico \
-  --body @index.html \
-  --header "Content-Type: text/html"
-
-# Serve any file content
-./target/release/statico \
-  --body @data.xml \
-  --header "Content-Type: application/xml"
-```
-
-### Real-time metrics monitoring
-
-The `--meter` flag enables real-time performance monitoring, displaying metrics every second:
-
-```bash
-# Enable metrics monitoring
+# Real-time metrics
 ./target/release/statico --meter
-
-# Example output:
-# req/s: 125430, req: 0.942 Gbps, res/s: 125430, res: 1.254 Gbps
-```
-
-The metrics show:
-- **req/s**: Requests received per second
-- **req**: Incoming bandwidth in Gbps
-- **res/s**: Responses sent per second  
-- **res**: Outgoing bandwidth in Gbps
-
-When you stop the server (Ctrl+C), it displays a final summary:
-```
-Total requests:  1234567
-Total req bytes: 1234567890 (1.235 GB)
-Total responses: 1234567
-Total res bytes: 9876543210 (9.877 GB)
 ```
 
 ## Architecture
 
 ### Threading Model
-- The main thread parses command line arguments and spawns worker threads
-- Each worker thread creates its own socket bound to the same port using SO_REUSEPORT
-- Each worker thread runs a single-threaded Tokio runtime (`current_thread`)
-- The kernel load-balances incoming connections across threads
+- Main thread parses arguments and spawns workers
+- Each worker creates its own socket with SO_REUSEPORT
+- Each worker runs a single-threaded Tokio runtime
+- Kernel load-balances connections across threads via reuse port 
 
-### Socket Reuse
-- **Linux/Android**: Uses `SO_REUSEPORT` for true load balancing across threads
-- **Other Unix systems**: Falls back to `SO_REUSEADDR` (connections handled by one thread)
-- **Windows**: Uses `SO_REUSEADDR`
+### Runtimes
 
-### Runtime Support
+| Runtime | Feature Flag | Notes |
+|---------|--------------|-------|
+| `tokio` (default) | - | Single-threaded runtimes |
+| `tokio-local` | - | Uses `LocalSet` |
+| `smol` | `smol` | Alternative async runtime |
+| `tokio-uring` | `tokio_uring` | io_uring support |
+| `monoio` | `monoio` | io_uring (potentially faster) |
+| `glommio` | `glommio` | io_uring (potentially faster) |
 
-Statico supports multiple async runtimes, selectable via the `--runtime` option:
-
-#### Standard Runtimes
-- **tokio** (default): Multiple Single-threaded Tokio runtimes
-- **tokio-local**: Multiple Single-threaded Tokio runtimes spawning tasks on `LocalSet`.
-
-#### Alternative Runtimes
-
-- **tokio-local**: Multiple single-threaded Tokio runtimes spawning tasks on `LocalSet`
-  - Run with `--runtime tokio-local`
-
-- **smol**: Uses the smol async runtime (requires compilation with `--features smol`)
-  - Run with `--runtime smol`
-
-#### io_uring-based Runtimes (Linux only)
-These runtimes provide experimental support for Linux's io_uring interface and may offer significantly better performance:
-
-- **tokio-uring**: Requires compilation with `--features tokio_uring`
-  - Run with `--runtime tokio-uring`
-  - This is the runtime used in the benchmark results shown above
-  
-- **monoio**: Requires compilation with `--features monoio`
-  - Run with `--runtime monoio`
-  - May show even better performance than tokio-uring
-  
-- **glommio**: Requires compilation with `--features glommio`
-  - Run with `--runtime glommio`
-  - May show even better performance than tokio-uring
-
-#### io_uring Configuration
-When using io_uring-based runtimes, you can configure:
-- Submission queue size with `--uring-entries` (default: 4096)
-- Kernel-side polling with `--uring-sqpoll <timeout_ms>`
-
-Note: io_uring and smol runtimes currently provide a simplified implementation (only HTTP/1.1 is supported)
+*Note: io_uring and smol runtimes support HTTP/1.1 only.*
 
 ## Use Cases
 
-- **Load testing**: Generate consistent HTTP responses for testing client applications
-- **Mocking services**: Simulate API endpoints with specific status codes and responses
-- **Static file serving**: Serve static content from files without a full web server
-- **Health checks**: Provide simple health check endpoints
-- **Benchmarking**: Test HTTP client performance with minimal server overhead
-- **Development**: Quick HTTP server for development and testing scenarios
-
-## Testing
-
-Test the server with curl:
-```bash
-# Basic test
-curl http://localhost:8080
-
-# With verbose output to see headers
-curl -v http://localhost:8080
-
-# Load test with Apache Bench
-ab -n 10000 -c 100 http://localhost:8080/
-```
+- **Load testing** and **benchmarking** HTTP clients
+- **Mocking services** and API endpoints
+- **Static file serving** without full web server overhead
+- **Health check** endpoints
+- **Development** and testing scenarios
 
 ## License
 
-This project is provided as-is for educational and practical use.
+Provided as-is for educational and practical use.
