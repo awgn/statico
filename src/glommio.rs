@@ -7,7 +7,7 @@ use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
 use futures::stream::{select_all, unfold, StreamExt};
-use futures_lite::{AsyncReadExt, AsyncWriteExt};
+use futures::{AsyncReadExt, AsyncWriteExt};
 use http_body_util::Full;
 
 use hyper::header::CONTENT_LENGTH;
