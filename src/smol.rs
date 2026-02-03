@@ -49,16 +49,17 @@ pub fn run_thread(
     smol::block_on(ex.run(async move {
         // Combine all listeners into a single stream
         let mut all_listeners = select_all(listeners.into_iter().map(|l| {
-            Box::pin(unfold(l, |listener| async move {
+            let port = l.local_addr().unwrap().port();
+            Box::pin(unfold(l, move |listener| async move {
                 match listener.accept().await {
-                    Ok((s, _)) => Some((Ok(s), listener)),
+                    Ok((tcp_stream, _)) => Some((Ok((tcp_stream, port)), listener)),
                     Err(e) => Some((Err(e), listener)),
                 }
             }))
         }));
 
         loop {
-            let stream = match all_listeners.next().await {
+            let (stream, port) = match all_listeners.next().await {
                 Some(Ok(s)) => s,
                 Some(Err(e)) => {
                     error!("Thread {} accept error: {}", id, e);

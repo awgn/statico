@@ -70,7 +70,9 @@ pub fn run_thread(
                 .map(|listener| {
                     Box::pin(futures::stream::unfold(listener, |l| async move {
                         match l.accept().await {
-                            Ok((socket, _)) => Some((Ok(socket), l)),
+                            Ok((tcp_stream, _)) => {
+                                Some((Ok((tcp_stream, l.local_addr().unwrap().port())), l))
+                            }
                             Err(e) => {
                                 error!("Accept error: {}", e);
                                 // Continue accepting despite errors
@@ -85,13 +87,14 @@ pub fn run_thread(
 
             loop {
                 match all_listeners.next().await {
-                    Some(Ok(socket)) => {
+                    Some(Ok((tcp_stream, port))) => {
                         let config = config.clone();
 
                         // Spawn task to handle the connection with io_uring
                         tokio_uring::spawn(async move {
                             if let Err(e) =
-                                handle_connection_uring(socket, config, false, meter, delay).await
+                                handle_connection_uring(tcp_stream, config, false, meter, delay)
+                                    .await
                             {
                                 error!("Error handling tokio_uring connection: {}", e);
                             }

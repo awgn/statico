@@ -54,7 +54,10 @@ async fn tokio_srv(
     let mut all_listeners = select_all(listeners.into_iter().map(|l| {
         Box::pin(unfold(l, |listener| async move {
             match listener.accept().await {
-                Ok((socket, _)) => Some((Ok(socket), listener)),
+                Ok((tcp_stream, _)) => Some((
+                    Ok((tcp_stream, listener.local_addr().unwrap().port())),
+                    listener,
+                )),
                 Err(e) => Some((Err(e), listener)),
             }
         }))
@@ -64,8 +67,8 @@ async fn tokio_srv(
         tokio::select! {
             incoming = all_listeners.next() => {
                 match incoming {
-                    Some(Ok(socket)) => {
-                        let io = TokioIo::new(socket);
+                    Some(Ok((tcp_stream, port))) => {
+                        let io = TokioIo::new(tcp_stream);
                         let config = config.clone();
                         let use_http2 = opts.http2;
                         let verbose = opts.verbose;

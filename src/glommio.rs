@@ -61,9 +61,10 @@ pub fn run_thread(
 
             // Combine all listeners into a single stream
             let mut all_listeners = select_all(listeners.into_iter().map(|l: glommio::net::TcpListener| {
-                Box::pin(unfold(l, |listener: glommio::net::TcpListener| async move {
+                let port = l.local_addr().unwrap().port();
+                Box::pin(unfold(l, move |listener: glommio::net::TcpListener| async move {
                     match listener.accept().await {
-                        Ok(stream) => Some((Ok(stream), listener)),
+                        Ok(stream) => Some((Ok((stream, port)), listener)),
                         Err(e) => Some((Err(e), listener)),
                     }
                 }))
@@ -75,8 +76,8 @@ pub fn run_thread(
             );
 
             loop {
-                let stream: glommio::net::TcpStream = match all_listeners.next().await {
-                    Some(Ok(s)) => s,
+                let (stream, port)  = match all_listeners.next().await {
+                    Some(Ok((s, port))) => (s, port),
                     Some(Err(e)) => {
                         error!("Thread {} accept error: {}", id, e);
                         continue;

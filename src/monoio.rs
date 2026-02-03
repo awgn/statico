@@ -54,7 +54,7 @@ pub fn run_thread(
     let mut rt = builder.build().unwrap();
 
     rt.block_on(async move {
-        
+
         // Create multiple sockets manually with SO_REUSEPORT enabled
         let mut listeners = Vec::new();
         for addr in &addrs {
@@ -79,7 +79,7 @@ pub fn run_thread(
             .map(|listener| {
                 Box::pin(unfold(listener, |l| async {
                     match l.accept().await {
-                        Ok((stream, addr)) => Some((Ok((stream, addr)), l)),
+                        Ok((stream, addr)) => Some((Ok((stream, l.local_addr().unwrap().port())), l)),
                         Err(e) => Some((Err(e), l)),
                     }
                 }))
@@ -90,7 +90,7 @@ pub fn run_thread(
         let mut all_listeners = select_all(streams);
 
         loop {
-            let (stream, _) = match all_listeners.next().await {
+            let (stream, port) = match all_listeners.next().await {
                 Some(Ok(s)) => s,
                 Some(Err(e)) => {
                     error!("Thread {} accept error: {}", id, e);
