@@ -1,5 +1,6 @@
 use crate::execute_delay;
 use crate::options::Options;
+use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
@@ -34,7 +35,8 @@ pub fn run_thread(
     let meter = opts.meter;
     let tcp_nodelay = opts.tcp_nodelay;
 
-    let cpu_set = core_affinity::get_core_ids().ok_or(anyhow::anyhow!("Failed to get thread affinity"))?;
+    let cpu_set =
+        core_affinity::get_core_ids().ok_or(anyhow::anyhow!("Failed to get thread affinity"))?;
     let num_cpus = cpu_set.len();
     let cpu_core = cpu_set.into_iter().nth(id % num_cpus).unwrap();
 
@@ -60,15 +62,19 @@ pub fn run_thread(
                 .collect();
 
             // Combine all listeners into a single stream
-            let mut all_listeners = select_all(listeners.into_iter().map(|l: glommio::net::TcpListener| {
-                let port = l.local_addr().unwrap().port();
-                Box::pin(unfold(l, move |listener: glommio::net::TcpListener| async move {
-                    match listener.accept().await {
-                        Ok(stream) => Some((Ok((stream, port)), listener)),
-                        Err(e) => Some((Err(e), listener)),
-                    }
-                }))
-            }));
+            let mut all_listeners =
+                select_all(listeners.into_iter().map(|l: glommio::net::TcpListener| {
+                    let port = l.local_addr().unwrap().port();
+                    Box::pin(unfold(
+                        l,
+                        move |listener: glommio::net::TcpListener| async move {
+                            match listener.accept().await {
+                                Ok(stream) => Some((Ok((stream, port)), listener)),
+                                Err(e) => Some((Err(e), listener)),
+                            }
+                        },
+                    ))
+                }));
 
             info!(
                 "Thread {} listening on {:?} (glommio cpu-{})",
@@ -76,7 +82,7 @@ pub fn run_thread(
             );
 
             loop {
-                let (stream, port)  = match all_listeners.next().await {
+                let (stream, port) = match all_listeners.next().await {
                     Some(Ok((s, port))) => (s, port),
                     Some(Err(e)) => {
                         error!("Thread {} accept error: {}", id, e);
@@ -100,7 +106,7 @@ pub fn run_thread(
                 // Spawn task to handle the connection with glommio
                 glommio::spawn_local(async move {
                     if let Err(e) =
-                        handle_connection_glommio(stream, config, false, meter, delay).await
+                        handle_connection_glommio(stream, port, config, false, meter, delay).await
                     {
                         error!("Error handling glommio connection: {}", e);
                     }
@@ -116,6 +122,7 @@ pub fn run_thread(
 
 async fn handle_connection_glommio(
     mut stream: glommio::net::TcpStream,
+    port: u16,
     config: Arc<ServerConfig>,
     http2: bool,
     meter: bool,
@@ -199,6 +206,9 @@ async fn handle_connection_glommio(
                     if meter {
                         REQUESTS.add(1);
                         REQUEST_BYTES.add(req_len);
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.requests.add(1);
+                        entry.request_bytes.add(req_len);
                     }
 
                     if let Some(d) = delay {
@@ -211,6 +221,9 @@ async fn handle_connection_glommio(
                     if meter {
                         RESPONSES.add(1);
                         RESPONSE_BYTES.add(response_bytes.len());
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.responses.add(1);
+                        entry.response_bytes.add(response_bytes.len());
                     }
                 }
                 Err(_) => break, // Incomplete request or end of batch

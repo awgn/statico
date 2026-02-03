@@ -1,9 +1,9 @@
 use clap::{Parser, ValueEnum};
 use humantime::parse_duration;
 use number_range::NumberRangeOptions;
+use std::fmt::Display;
 use std::ops::Deref;
 use std::str::FromStr;
-use std::fmt::Display;
 
 #[derive(Clone, Debug)]
 pub struct Ports(pub Vec<u16>);

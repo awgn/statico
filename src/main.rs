@@ -5,31 +5,29 @@ mod pretty;
 mod tokio;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
-
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 mod monoio;
-
 #[cfg(all(target_os = "linux", feature = "glommio"))]
 mod glommio;
-
 #[cfg(feature = "smol")]
 mod smol;
 
 use crate::options::Options;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
 use contatori::counters::{CounterValue, Observable};
+use dashmap::DashMap;
 use hyper::StatusCode;
 use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use anyhow::anyhow;
 
 /// Configuration shared across threads
 #[derive(Clone)]
@@ -44,6 +42,17 @@ pub static REQUEST_BYTES: Monotone = Monotone::new();
 pub static RESPONSES: Monotone = Monotone::new();
 pub static RESPONSE_BYTES: Monotone = Monotone::new();
 
+/// Per-port counters struct
+#[derive(Default, Debug)]
+pub struct PortCounters {
+    pub requests: Monotone,
+    pub request_bytes: Monotone,
+    pub responses: Monotone,
+    pub response_bytes: Monotone,
+}
+
+/// Global DashMap indexed by port (u16) for per-port statistics
+pub static PORT_COUNTERS: LazyLock<DashMap<u16, PortCounters>> = LazyLock::new(|| DashMap::new());
 
 fn main() -> Result<()> {
     // Initialize tracing subscriber
@@ -59,8 +68,6 @@ fn main() -> Result<()> {
     // ... and balance them to threads
 
     let chunks = balance_ports(&opts.ports.0, opts.threads, opts.bind_all);
-
-    println!("ports chunked: {:?}", chunks);
 
     // Build SocketAddr from address option
     let addrs: Vec<Vec<SocketAddr>> = match &opts.address {
@@ -145,8 +152,6 @@ fn main() -> Result<()> {
     let mut handles = Vec::new();
 
     for id in 0..args.threads {
-        info!("Starting server on ports {:?}", chunks[id]);
-
         let config = config.clone();
         let args = args.clone();
         let addr = addrs[id].clone();
@@ -325,7 +330,7 @@ fn print_final_report() {
     let req_bytes_val = req_bytes.as_u64();
     let res_bytes_val = res_bytes.as_u64();
 
-    println!("Total requests:  {}", req);
+    println!("\nTotal requests:  {}", req);
     println!(
         "Total req bytes: {} ({:.3} GB)",
         req_bytes,
@@ -337,6 +342,32 @@ fn print_final_report() {
         res_bytes,
         res_bytes_val as f64 / 1_000_000_000.0
     );
+
+    // Print per-port statistics
+    println!("\n--- Per-Port Statistics ---");
+    let mut ports: Vec<u16> = PORT_COUNTERS.iter().map(|e| *e.key()).collect();
+    ports.sort();
+
+    for port in ports {
+        if let Some(entry) = PORT_COUNTERS.get(&port) {
+            let port_req = entry.requests.value().as_u64();
+            let port_req_bytes = entry.request_bytes.value().as_u64();
+            let port_res = entry.responses.value().as_u64();
+            let port_res_bytes = entry.response_bytes.value().as_u64();
+
+            println!("\nPort {}:", port);
+            println!("  Requests:  {}", port_req);
+            println!("  Req bytes: {} ({:.3} GB)",
+                port_req_bytes,
+                port_req_bytes as f64 / 1_000_000_000.0
+            );
+            println!("  Responses: {}", port_res);
+            println!("  Res bytes: {} ({:.3} GB)",
+                port_res_bytes,
+                port_res_bytes as f64 / 1_000_000_000.0
+            );
+        }
+    }
 }
 
 fn run_thread(

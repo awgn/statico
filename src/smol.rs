@@ -4,6 +4,7 @@ use crate::http::{chunked_body_wire_size, request_head_size, response_head_size}
 use crate::options::Options;
 use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
+use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
@@ -40,7 +41,9 @@ pub fn run_thread(
     let mut listeners = Vec::new();
     for addr in &addrs {
         let std_listener = crate::create_listener(*addr, opts)?;
-        listeners.push(smol::net::TcpListener::from(smol::Async::new(std_listener)?));
+        listeners.push(smol::net::TcpListener::from(smol::Async::new(
+            std_listener,
+        )?));
     }
 
     let ex = std::rc::Rc::new(smol::LocalExecutor::new());
@@ -90,6 +93,7 @@ pub fn run_thread(
                     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                         let config = config.clone();
                         async move {
+                            let port = port;
                             let (head_size, is_chunked) = if meter {
                                 let hs = request_head_size(&req);
                                 let chunked = req
@@ -111,8 +115,7 @@ pub fn run_thread(
                             };
 
                             if meter {
-                                REQUESTS.add(1);
-                                if let Some(ref req) = collected_req {
+                                let req_bytes_total = if let Some(ref req) = collected_req {
                                     let body_bytes = req.body().len();
                                     // For chunked encoding, calculate the wire format overhead
                                     let body_size = if is_chunked {
@@ -120,10 +123,15 @@ pub fn run_thread(
                                     } else {
                                         body_bytes
                                     };
-                                    REQUEST_BYTES.add(head_size + body_size);
+                                    head_size + body_size
                                 } else {
-                                    REQUEST_BYTES.add(head_size);
-                                }
+                                    head_size
+                                };
+                                REQUESTS.add(1);
+                                REQUEST_BYTES.add(req_bytes_total);
+                                let entry = PORT_COUNTERS.entry(port).or_default();
+                                entry.requests.add(1);
+                                entry.request_bytes.add(req_bytes_total);
                             }
 
                             if verbose > 0 {
@@ -160,9 +168,13 @@ pub fn run_thread(
 
                             if let Ok(ref resp) = resp {
                                 if meter {
-                                    RESPONSES.add(1);
                                     let head_size = response_head_size(resp, config.body.len());
-                                    RESPONSE_BYTES.add(head_size + config.body.len());
+                                    let res_bytes_total = head_size + config.body.len();
+                                    RESPONSES.add(1);
+                                    RESPONSE_BYTES.add(res_bytes_total);
+                                    let entry = PORT_COUNTERS.entry(port).or_default();
+                                    entry.responses.add(1);
+                                    entry.response_bytes.add(res_bytes_total);
                                 }
                                 if verbose > 0 {
                                     // Create a response with Bytes body for printing

@@ -1,11 +1,12 @@
 use crate::execute_delay;
 use crate::options::Options;
+use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
-use futures::stream::{select_all, StreamExt, unfold};
+use futures::stream::{select_all, unfold, StreamExt};
 use http_body_util::Full;
 
 use hyper::header::CONTENT_LENGTH;
@@ -54,7 +55,6 @@ pub fn run_thread(
     let mut rt = builder.build().unwrap();
 
     rt.block_on(async move {
-
         // Create multiple sockets manually with SO_REUSEPORT enabled
         let mut listeners = Vec::new();
         for addr in &addrs {
@@ -79,7 +79,9 @@ pub fn run_thread(
             .map(|listener| {
                 Box::pin(unfold(listener, |l| async {
                     match l.accept().await {
-                        Ok((stream, addr)) => Some((Ok((stream, l.local_addr().unwrap().port())), l)),
+                        Ok((stream, _addr)) => {
+                            Some((Ok((stream, l.local_addr().unwrap().port())), l))
+                        }
                         Err(e) => Some((Err(e), l)),
                     }
                 }))
@@ -106,7 +108,8 @@ pub fn run_thread(
 
             // Spawn task to handle the connection with monoio
             monoio::spawn(async move {
-                if let Err(e) = handle_connection_monoio(stream, config, false, meter, delay).await
+                if let Err(e) =
+                    handle_connection_monoio(stream, port, config, false, meter, delay).await
                 {
                     error!("Error handling monoio connection: {}", e);
                 }
@@ -119,6 +122,7 @@ pub fn run_thread(
 
 async fn handle_connection_monoio(
     mut stream: monoio::net::TcpStream,
+    port: u16,
     config: Arc<ServerConfig>,
     http2: bool,
     meter: bool,
@@ -204,6 +208,9 @@ async fn handle_connection_monoio(
                     if meter {
                         REQUESTS.add(1);
                         REQUEST_BYTES.add(req_len);
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.requests.add(1);
+                        entry.request_bytes.add(req_len);
                     }
 
                     if let Some(d) = delay {
@@ -218,6 +225,9 @@ async fn handle_connection_monoio(
                     if meter {
                         RESPONSES.add(1);
                         RESPONSE_BYTES.add(response_buf.len());
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.responses.add(1);
+                        entry.response_bytes.add(response_buf.len());
                     }
                 }
                 Err(_) => break, // Incomplete request or end of batch

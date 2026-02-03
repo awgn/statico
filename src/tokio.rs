@@ -21,6 +21,7 @@ use crate::delayed_body::DelayedBody;
 use crate::execute_delay;
 use crate::http::chunked_body_wire_size;
 use crate::http::{request_head_size, response_head_size};
+use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
@@ -101,8 +102,7 @@ async fn tokio_srv(
                                     };
 
                                     if meter {
-                                        REQUESTS.add(1);
-                                        if let Some(ref req) = collected_req {
+                                        let req_bytes_total = if let Some(ref req) = collected_req {
                                             let body_bytes = req.body().len();
                                             // For chunked encoding, calculate the wire format overhead
                                             let body_size = if is_chunked {
@@ -110,10 +110,16 @@ async fn tokio_srv(
                                             } else {
                                                 body_bytes
                                             };
-                                            REQUEST_BYTES.add(head_size + body_size);
+                                            head_size + body_size
                                         } else {
-                                            REQUEST_BYTES.add(head_size);
-                                        }
+                                            head_size
+                                        };
+
+                                        REQUESTS.add(1);
+                                        REQUEST_BYTES.add(req_bytes_total);
+                                        let entry = PORT_COUNTERS.entry(port).or_default();
+                                        entry.requests.add(1);
+                                        entry.request_bytes.add(req_bytes_total);
                                     }
 
                                     if verbose > 0 {
@@ -148,9 +154,13 @@ async fn tokio_srv(
 
                                     if let Ok(ref resp) = resp {
                                         if meter {
-                                            RESPONSES.add(1);
                                             let head_size = response_head_size(resp, config.body.len());
-                                            RESPONSE_BYTES.add(head_size + config.body.len());
+                                            let res_bytes_total = head_size + config.body.len();
+                                            RESPONSES.add(1);
+                                            RESPONSE_BYTES.add(res_bytes_total);
+                                            let entry = PORT_COUNTERS.entry(port).or_default();
+                                            entry.responses.add(1);
+                                            entry.response_bytes.add(res_bytes_total);
                                         }
                                         if verbose > 0 {
                                             // Create a response with Bytes body for printing

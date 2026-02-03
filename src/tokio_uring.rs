@@ -1,5 +1,6 @@
 use crate::execute_delay;
 use crate::options::Options;
+use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
@@ -92,9 +93,10 @@ pub fn run_thread(
 
                         // Spawn task to handle the connection with io_uring
                         tokio_uring::spawn(async move {
-                            if let Err(e) =
-                                handle_connection_uring(tcp_stream, config, false, meter, delay)
-                                    .await
+                            if let Err(e) = handle_connection_uring(
+                                tcp_stream, port, config, false, meter, delay,
+                            )
+                            .await
                             {
                                 error!("Error handling tokio_uring connection: {}", e);
                             }
@@ -117,6 +119,7 @@ pub fn run_thread(
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 async fn handle_connection_uring(
     stream: tokio_uring::net::TcpStream,
+    port: u16,
     config: Arc<ServerConfig>,
     http2: bool,
     meter: bool,
@@ -204,6 +207,9 @@ async fn handle_connection_uring(
                     if meter {
                         REQUESTS.add(1);
                         REQUEST_BYTES.add(req_len);
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.requests.add(1);
+                        entry.request_bytes.add(req_len);
                     }
 
                     if let Some(d) = delay {
@@ -218,6 +224,9 @@ async fn handle_connection_uring(
                     if meter {
                         RESPONSES.add(1);
                         RESPONSE_BYTES.add(response_buf.len());
+                        let entry = PORT_COUNTERS.entry(port).or_default();
+                        entry.responses.add(1);
+                        entry.response_bytes.add(response_buf.len());
                     }
                 }
                 Err(_) => break, // Incomplete request or end of batch
