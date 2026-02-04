@@ -64,6 +64,7 @@ fn main() -> Result<()> {
         .init();
 
     let opts = Options::parse();
+    let total_ports = opts.ports.0.len();
 
     // ... and balance them to threads
 
@@ -143,7 +144,7 @@ fn main() -> Result<()> {
     // Set up ctrlc handler to print final report
     ctrlc::set_handler(move || {
         if meter_enabled {
-            print_final_report();
+            print_final_report(total_ports > 1);
         }
         std::process::exit(0);
     })
@@ -323,7 +324,7 @@ pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::Tcp
     Ok(socket.into())
 }
 
-fn print_final_report() {
+fn print_final_report(port_stats: bool) {
     let (req, req_bytes, res, res_bytes) = read_counters();
 
     // Convert bytes to human-readable format
@@ -332,40 +333,42 @@ fn print_final_report() {
 
     println!("\nTotal requests:  {}", req);
     println!(
-        "Total req bytes: {} ({:.3} GB)",
+        "Total request bytes: {} ({:.3} GB)",
         req_bytes,
         req_bytes_val as f64 / 1_000_000_000.0
     );
     println!("Total responses: {}", res);
     println!(
-        "Total res bytes: {} ({:.3} GB)",
+        "Total response bytes: {} ({:.3} GB)",
         res_bytes,
         res_bytes_val as f64 / 1_000_000_000.0
     );
 
-    // Print per-port statistics
-    println!("\n--- Per-Port Statistics ---");
-    let mut ports: Vec<u16> = PORT_COUNTERS.iter().map(|e| *e.key()).collect();
-    ports.sort();
+    if port_stats {
+        // Print per-port statistics
+        println!("\n--- Per-Port Statistics ---");
+        let mut ports: Vec<u16> = PORT_COUNTERS.iter().map(|e| *e.key()).collect();
+        ports.sort();
 
-    for port in ports {
-        if let Some(entry) = PORT_COUNTERS.get(&port) {
-            let port_req = entry.requests.value().as_u64();
-            let port_req_bytes = entry.request_bytes.value().as_u64();
-            let port_res = entry.responses.value().as_u64();
-            let port_res_bytes = entry.response_bytes.value().as_u64();
+        for port in ports {
+            if let Some(entry) = PORT_COUNTERS.get(&port) {
+                let port_req = entry.requests.value().as_u64();
+                let port_req_bytes = entry.request_bytes.value().as_u64();
+                let port_res = entry.responses.value().as_u64();
+                let port_res_bytes = entry.response_bytes.value().as_u64();
 
-            println!("\nPort {}:", port);
-            println!("  Requests:  {}", port_req);
-            println!("  Req bytes: {} ({:.3} GB)",
-                port_req_bytes,
-                port_req_bytes as f64 / 1_000_000_000.0
-            );
-            println!("  Responses: {}", port_res);
-            println!("  Res bytes: {} ({:.3} GB)",
-                port_res_bytes,
-                port_res_bytes as f64 / 1_000_000_000.0
-            );
+                println!("\nPort {}:", port);
+                println!("  Requests:  {}", port_req);
+                println!("  Request bytes: {} ({:.3} GB)",
+                    port_req_bytes,
+                    port_req_bytes as f64 / 1_000_000_000.0
+                );
+                println!("  Responses: {}", port_res);
+                println!("  Response bytes: {} ({:.3} GB)",
+                    port_res_bytes,
+                    port_res_bytes as f64 / 1_000_000_000.0
+                );
+            }
         }
     }
 }
