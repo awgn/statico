@@ -14,6 +14,7 @@ mod smol;
 
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
+use std::net::IpAddr;
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
@@ -22,7 +23,7 @@ use dashmap::DashMap;
 use hyper::StatusCode;
 use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::thread;
@@ -72,27 +73,33 @@ fn main() -> Result<()> {
 
     // Build SocketAddr from address option
     let addrs: Vec<Vec<SocketAddr>> = match &opts.address {
-        Some(address) => chunks
-            .iter()
-            .map(|slice| {
-                slice
-                    .iter()
-                    .map(|&port| {
-                        let addr_with_port = format!("{}:{}", address, port);
-                        addr_with_port
-                            .parse()
-                            .with_context(|| format!("Invalid address: {}", addr_with_port))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+        Some(address) => {
+            // Parse IpAddr once instead of re-parsing "ip:port" for every port
+            let ip: IpAddr = address
+                .parse()
+                .with_context(|| format!("Invalid address: {}", address))?;
+            chunks
+                .iter()
+                .map(|slice| {
+                    let mut v = Vec::with_capacity(slice.len());
+                    for &port in slice.iter() {
+                        v.push(match ip {
+                            IpAddr::V4(a) => SocketAddr::V4(SocketAddrV4::new(a, port)),
+                            IpAddr::V6(a) => SocketAddr::V6(SocketAddrV6::new(a, port, 0, 0)),
+                        });
+                    }
+                    v
+                })
+                .collect()
+        }
         None => chunks
             .iter()
             .map(|slice| {
-                slice
-                    .iter()
-                    .map(|&port| SocketAddr::from(([0, 0, 0, 0], port)))
-                    .collect()
+                let mut v = Vec::with_capacity(slice.len());
+                for &port in slice.iter() {
+                    v.push(SocketAddr::from(([0, 0, 0, 0], port)));
+                }
+                v
             })
             .collect(),
     };

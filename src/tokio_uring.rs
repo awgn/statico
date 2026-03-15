@@ -69,11 +69,10 @@ pub fn run_thread(
             let streams: Vec<_> = listeners
                 .into_iter()
                 .map(|listener| {
-                    Box::pin(futures::stream::unfold(listener, |l| async move {
+                    let port = listener.local_addr().unwrap().port();
+                    Box::pin(futures::stream::unfold(listener, move |l| async move {
                         match l.accept().await {
-                            Ok((tcp_stream, _)) => {
-                                Some((Ok((tcp_stream, l.local_addr().unwrap().port())), l))
-                            }
+                            Ok((tcp_stream, _)) => Some((Ok((tcp_stream, port)), l)),
                             Err(e) => {
                                 error!("Accept error: {}", e);
                                 // Continue accepting despite errors

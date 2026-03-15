@@ -53,12 +53,10 @@ async fn tokio_srv(
     // Create futures
 
     let mut all_listeners = select_all(listeners.into_iter().map(|l| {
-        Box::pin(unfold(l, |listener| async move {
+        let port = l.local_addr().unwrap().port();
+        Box::pin(unfold(l, move |listener| async move {
             match listener.accept().await {
-                Ok((tcp_stream, _)) => Some((
-                    Ok((tcp_stream, listener.local_addr().unwrap().port())),
-                    listener,
-                )),
+                Ok((tcp_stream, _)) => Some((Ok((tcp_stream, port)), listener)),
                 Err(e) => Some((Err(e), listener)),
             }
         }))

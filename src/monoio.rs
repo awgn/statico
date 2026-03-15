@@ -77,11 +77,10 @@ pub fn run_thread(
         let streams: Vec<_> = listeners
             .into_iter()
             .map(|listener| {
-                Box::pin(unfold(listener, |l| async {
+                let port = listener.local_addr().unwrap().port();
+                Box::pin(unfold(listener, move |l| async move {
                     match l.accept().await {
-                        Ok((stream, _addr)) => {
-                            Some((Ok((stream, l.local_addr().unwrap().port())), l))
-                        }
+                        Ok((stream, _addr)) => Some((Ok((stream, port)), l)),
                         Err(e) => Some((Err(e), l)),
                     }
                 }))
