@@ -242,7 +242,7 @@ async fn handle_connection_uring(
 /// This pre-encodes the response to avoid re-encoding on every request, significantly
 /// improving performance for static responses.
 async fn build_response_simple(config: &ServerConfig) -> Result<Vec<u8>> {
-    use http_wire::WireEncodeAsync;
+    use http_wire::WireEncode;
 
     // Build the HTTP response with configured status code
     let mut builder = Response::builder().status(config.status);
@@ -259,5 +259,5 @@ async fn build_response_simple(config: &ServerConfig) -> Result<Vec<u8>> {
 
     // Build the response and encode it to wire format (HTTP/1.1 bytes)
     let res = builder.body(Full::new(config.body.clone()))?;
-    Ok(res.encode_async().await?.to_vec())
+    Ok(res.encode()?.to_vec())
 }
