@@ -45,13 +45,19 @@ monoio = { version = "0.2", optional = true }
 io-uring = { version = "0.6", optional = true }
 glommio = { version = "0.9", optional = true }
 
+[dependencies.compio]
+version = "0.18"
+features = ["runtime", "net"]
+optional = true
+
 [features]
 default = ["mimalloc"]
 tokio_uring = ["dep:tokio-uring"]
 monoio = ["dep:monoio", "dep:io-uring"]
 glommio = ["dep:glommio"]
 smol = ["dep:smol", "dep:smol-hyper"]
-full = ["tokio_uring", "monoio", "glommio", "smol", "mimalloc"]
+compio = ["dep:compio"]
+full = ["tokio_uring", "monoio", "glommio", "smol", "compio", "mimalloc"]
 
 [profile.release]
 debug = false

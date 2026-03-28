@@ -12,6 +12,8 @@ mod monoio;
 mod glommio;
 #[cfg(feature = "smol")]
 mod smol;
+#[cfg(feature = "compio")]
+mod compio;
 
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
@@ -150,6 +152,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "smol")]
     if matches!(opts.runtime, crate::options::Runtime::Smol) && opts.http2 {
         return Err(anyhow!("HTTP/2 is not currently supported with smol"));
+    }
+    #[cfg(feature = "compio")]
+    if matches!(opts.runtime, crate::options::Runtime::Compio) && opts.http2 {
+        return Err(anyhow!("HTTP/2 is not currently supported with compio"));
     }
 
     let args = Arc::new(opts);
@@ -406,5 +412,7 @@ fn run_thread(
         Runtime::Glommio => crate::glommio::run_thread(id, addr, config, opts),
         #[cfg(feature = "smol")]
         Runtime::Smol => crate::smol::run_thread(id, addr, config, opts),
+        #[cfg(feature = "compio")]
+        Runtime::Compio => crate::compio::run_thread(id, addr, config, opts),
     }
 }

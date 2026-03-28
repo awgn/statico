@@ -60,6 +60,8 @@ pub enum Runtime {
     Glommio,
     #[cfg(feature = "smol")]
     Smol,
+    #[cfg(feature = "compio")]
+    Compio,
 }
 
 impl FromStr for Runtime {
@@ -77,6 +79,8 @@ impl FromStr for Runtime {
             "glommio" => Ok(Runtime::Glommio),
             #[cfg(feature = "smol")]
             "smol" => Ok(Runtime::Smol),
+            #[cfg(feature = "compio")]
+            "compio" => Ok(Runtime::Compio),
             _ => Err(format!("Unknown runtime: {}", s)),
         }
     }
