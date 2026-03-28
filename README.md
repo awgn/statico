@@ -37,11 +37,11 @@ The following benchmark compares Statico against other popular HTTP servers and 
 | actix-web (Rust) | 213,756 | 343,037 | 798,809 |
 
 **Key observations:**
-- Statico with io_uring achieves **1M+ req/s at 4 threads** with near-linear scaling
-- Standard Statico and nginx perform similarly single-threaded, but Statico scales better
-- Outperforms Axum, actix-web, and Go's fasthttp significantly at higher thread counts
-
-*Note: "statico + io_uring" uses `tokio-uring`. Other io_uring runtimes (`monoio`, `glommio`) may show even better performance.*
+- All four io_uring runtimes exceed **1.1M+ req/s at 4 threads**: `tokio-uring` leads at 1.39M, followed by `monoio` (1.36M), `compio` (1.27M), and `glommio` (1.14M)
+- `compio` and `glommio` show super-linear scaling (2.5× and 2.85× respectively from 1→4 threads), suggesting better CPU cache utilisation at higher parallelism
+- io_uring runtimes are **27–64% faster** than standard Tokio: at 1 thread `monoio` is ~64% ahead (656K vs 399K req/s); the gap narrows but persists at 4 threads (~30%)
+- Standard Statico already outperforms nginx by ~40% single-threaded (399K vs 287K req/s) and scales significantly better at higher thread counts
+- At 4 threads the top io_uring runtimes outperform Go fasthttp by **2.3×**, actix-web by **1.7×**, and Axum by **3.4×**
 
 ### Why is Statico fast?
 
@@ -95,7 +95,7 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | | `-vvv` — + body (readable text; non-printable bytes shown as inline hex) |
 | | `-vvvv` — + body as full hexdump |
 | `--http2` | Enable HTTP/2 (h2c) support (not supported with io_uring or smol runtimes) |
-| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `smol`, `tokio-uring`, `monoio`, `glommio` (default: tokio) |
+| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `smol`, `tokio-uring`, `monoio`, `glommio`, `compio` (default: tokio) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -136,6 +136,7 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 ./target/release/statico --runtime tokio-uring --threads 8
 ./target/release/statico --runtime monoio --threads 8
 ./target/release/statico --runtime glommio --threads 8
+./target/release/statico --runtime compio --threads 8
 
 # Add delay (latency simulation)
 ./target/release/statico --delay 100ms
@@ -174,12 +175,13 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | `tokio-uring` | `tokio_uring` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `monoio` | `monoio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `glommio` | `glommio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
+| `compio` | `compio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
 
-> **Note:** `tokio-uring`, `monoio`, and `glommio` are Linux-only and require the corresponding feature flags at compile time.
+> **Note:** `tokio-uring`, `monoio`, `glommio` and `compio` are Linux-only and require the corresponding feature flags at compile time.
 
 ### Pre-built responses (io_uring runtimes)
 
-`tokio-uring`, `monoio`, and `glommio` encode the full HTTP response — status line, headers, and body — into a single byte buffer once at startup. Every subsequent request reuses that buffer without any allocation or serialization overhead.
+`tokio-uring`, `monoio`, `glommio` and `compio` encode the full HTTP response — status line, headers, and body — into a single byte buffer once at startup. Every subsequent request reuses that buffer without any allocation or serialization overhead.
 
 The `tokio` and `smol` runtimes assemble the response per-connection using Hyper, caching only the body bytes as a reference-counted `Bytes` value.
 
