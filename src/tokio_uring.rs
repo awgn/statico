@@ -7,9 +7,6 @@ use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
 use futures::stream::{select_all, StreamExt};
-use http_body_util::Full;
-use hyper::header::CONTENT_LENGTH;
-use hyper::Response;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -126,6 +123,8 @@ async fn handle_connection_uring(
 ) -> Result<usize> {
     use http_wire::WireDecode;
     use std::mem::MaybeUninit;
+
+    use crate::response::build_response;
 
     if http2 {
         return Err(anyhow::anyhow!("HTTP/2 not supported with tokio_uring"));

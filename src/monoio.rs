@@ -5,12 +5,10 @@ use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
+use crate::response::build_response;
 use anyhow::Result;
 use futures::stream::{select_all, unfold, StreamExt};
-use http_body_util::Full;
 
-use hyper::header::CONTENT_LENGTH;
-use hyper::Response;
 use monoio::io::AsyncReadRent;
 use monoio::io::AsyncWriteRentExt;
 use monoio::time::TimeDriver;
