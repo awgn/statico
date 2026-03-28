@@ -46,11 +46,12 @@ io-uring = { version = "0.6", optional = true }
 glommio = { version = "0.9", optional = true }
 
 [features]
+default = ["mimalloc"]
 tokio_uring = ["dep:tokio-uring"]
 monoio = ["dep:monoio", "dep:io-uring"]
 glommio = ["dep:glommio"]
 smol = ["dep:smol", "dep:smol-hyper"]
-full = ["tokio_uring", "monoio", "glommio", "smol"]
+full = ["tokio_uring", "monoio", "glommio", "smol", "mimalloc"]
 
 [profile.release]
 debug = false
@@ -58,3 +59,7 @@ opt-level = 3
 strip = true
 codegen-units = 1
 lto = true
+
+[dependencies.mimalloc]
+version = "0.1"
+optional = true

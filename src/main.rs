@@ -31,6 +31,13 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 /// Configuration shared across threads
 #[derive(Clone)]
 pub struct ServerConfig {
