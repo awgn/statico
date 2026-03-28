@@ -17,14 +17,17 @@ A blazing-fast HTTP server in Rust for serving static responses. Designed strict
 
 The following benchmark compares Statico against other popular HTTP servers and frameworks in a synthetic scenario where each server returns a minimal static response from memory. All servers were configured for maximum performance (no logging, CPU pinning where applicable, in-memory responses).
 
-![Performance Benchmark](pic/perf.png)
+![Performance Benchmark](pic/benchmark.png)
 
 ### Benchmark Results (requests/second)
 
 | Server | 1 thread | 2 threads | 4 threads |
 |--------|----------|-----------|-----------|
-| **statico + io_uring** | 270,263 | 593,067 | 1,138,319 |
-| **statico** | 279,842 | 441,117 | 966,248 |
+| **statico (monoio) ** | 656,517 | 922,825  | 1,358,045 |
+| **statico (tokio-uring) ** | 589,086 | 932,143 | 1,393,573 |
+| **statico (glommio) ** | 400,036 | 816,936 | 1,140,535|
+| **statico (smol) ** | 323,267 | 525,824 | 771,202 |
+| **statico** | 399,025 | 638,767 | 1,071,433 |
 | nginx (return) | 286,960 | 379,974 | 832,082 |
 | HAProxy | 181,127 | 253,796 | 515,162 |
 | Go net/http | 69,212 | 168,220 | 366,084 |
