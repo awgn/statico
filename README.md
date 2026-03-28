@@ -10,6 +10,7 @@ A blazing-fast HTTP server in Rust for serving static responses. Designed strict
 - **Configurable responses**: custom status codes, headers, and body
 - **File-based responses** via `@filename` syntax
 - **Optional io_uring support** on Linux (compile-time feature)
+- **mimalloc allocator** by default for reduced memory allocation overhead
 - **Cross-platform**: Linux, macOS, Windows
 
 ## Performance
@@ -40,24 +41,28 @@ The following benchmark compares Statico against other popular HTTP servers and 
 
 ### Why is Statico fast?
 
-- Zero-allocation response serving (pre-built cached responses)
-- Single-threaded Tokio runtimes per worker reduce contention across cores 
+- **mimalloc** as the default global allocator reduces memory allocation overhead
+- Single-threaded Tokio runtimes per worker reduce contention across cores
 - SO_REUSEPORT for efficient kernel load balancing
-- File content loaded once at startup
+- File content loaded once at startup; body bytes cached as reference-counted `Bytes`
+- io_uring runtimes pre-encode the full HTTP response (headers + body) once at startup — zero allocation per request
+- io_uring runtimes handle HTTP pipelining: multiple requests parsed and answered in a single syscall round-trip
 - io_uring support on Linux (up to 40% faster)
+- glommio pins each worker thread to a dedicated CPU core for cache locality
 
 ## Building
 
 ```bash
-# Standard build
+# Standard build (mimalloc enabled by default)
 cargo build --release
 
-# With specific runtimes (each requires its own feature)
+# With specific runtimes (each requires its own feature flag)
 cargo build --release --features tokio_uring  # tokio-uring runtime
 cargo build --release --features monoio       # monoio runtime
 cargo build --release --features glommio      # glommio runtime
 cargo build --release --features smol         # smol runtime
-cargo build --release --all-features          # enable all runtimes 
+cargo build --release --features full         # all runtimes + mimalloc (named feature)
+cargo build --release --all-features          # all runtimes + mimalloc (cargo flag)
 ```
 
 ## Usage
@@ -78,10 +83,14 @@ cargo build --release --all-features          # enable all runtimes
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
 | `-H, --header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
 | `-d, --delay <DELAY>` | Delay before sending the response (e.g., `100ms`, `1s`, `500us`) |
-| `--body-delay <DELAY>` | Delay before sending the body of the response (e.g., `100ms`, `1s`, `500us`) |
-| `-m, --meter` | Enable real-time metrics monitoring (requests/sec, bandwidth) |
-| `-v, --verbose` | Increase verbosity level (can be repeated: `-v`, `-vv`, `-vvv`, `-vvvv`) |
-| `--http2` | Enable HTTP/2 (h2c) support |
+| `--body-delay <DELAY>` | Delay before sending the body only — HTTP headers are flushed immediately (e.g., `100ms`, `1s`, `500us`). Supported by `tokio`, `tokio-local`, and `smol` runtimes. |
+| `-m, --meter` | Enable real-time metrics: prints `req/s`, `req Gbps`, `res/s`, `res Gbps` every second. On exit (Ctrl+C) prints totals and, when multiple ports are used, per-port statistics. |
+| `-v, --verbose` | Increase verbosity (can be repeated; supported by `tokio`, `tokio-local`, and `smol` runtimes): |
+| | `-v` — request line + response status line |
+| | `-vv` — + request/response headers |
+| | `-vvv` — + body (readable text; non-printable bytes shown as inline hex) |
+| | `-vvvv` — + body as full hexdump |
+| `--http2` | Enable HTTP/2 (h2c) support (not supported with io_uring or smol runtimes) |
 | `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `smol`, `tokio-uring`, `monoio`, `glommio` (default: tokio) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
@@ -127,14 +136,20 @@ cargo build --release --all-features          # enable all runtimes
 # Add delay (latency simulation)
 ./target/release/statico --delay 100ms
 
-# Delay body only (headers sent immediately)
+# Delay body only (headers sent immediately, then body after delay)
 ./target/release/statico --body-delay 500ms
 
-# Verbose logging (levels: -v, -vv, -vvv, -vvvv)
-./target/release/statico -vv
+# Verbose logging
+./target/release/statico -v      # request/response line only
+./target/release/statico -vv     # + headers
+./target/release/statico -vvv    # + body (text)
+./target/release/statico -vvvv   # + body (hexdump)
 
-# Real-time metrics
+# Real-time metrics (req/s, Gbps); final report printed on Ctrl+C
 ./target/release/statico --meter
+
+# Real-time metrics with per-port breakdown on exit
+./target/release/statico --ports 8080,8081 --meter
 ```
 
 ## Architecture
@@ -142,21 +157,27 @@ cargo build --release --all-features          # enable all runtimes
 ### Threading Model
 - Main thread parses arguments and spawns workers
 - Each worker creates its own socket with SO_REUSEPORT
-- Each worker runs a single-threaded Tokio runtime
-- Kernel load-balances connections across threads via reuse port 
+- Each worker runs a single-threaded runtime (Tokio, smol, or io_uring-based)
+- Kernel load-balances connections across threads via SO_REUSEPORT
 
 ### Runtimes
 
 | Runtime | Feature Flag | Notes |
 |---------|--------------|-------|
-| `tokio` (default) | - | Single-threaded runtimes |
-| `tokio-local` | - | Uses `LocalSet` |
-| `smol` | `smol` | Alternative async runtime |
-| `tokio-uring` | `tokio_uring` | io_uring support |
-| `monoio` | `monoio` | io_uring (potentially faster) |
-| `glommio` | `glommio` | io_uring (potentially faster) |
+| `tokio` (default) | — | Single-threaded Tokio runtime per worker; supports HTTP/1.1 and HTTP/2, verbose, body-delay |
+| `tokio-local` | — | Like `tokio` but uses `LocalSet`; same feature set |
+| `smol` | `smol` | Alternative async runtime via smol-hyper; supports HTTP/1.1 only; supports verbose and body-delay |
+| `tokio-uring` | `tokio_uring` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
+| `monoio` | `monoio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
+| `glommio` | `glommio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
 
-*Note: io_uring and smol runtimes support HTTP/1.1 only.*
+> **Note:** `tokio-uring`, `monoio`, and `glommio` are Linux-only and require the corresponding feature flags at compile time.
+
+### Pre-built responses (io_uring runtimes)
+
+`tokio-uring`, `monoio`, and `glommio` encode the full HTTP response — status line, headers, and body — into a single byte buffer once at startup. Every subsequent request reuses that buffer without any allocation or serialization overhead.
+
+The `tokio` and `smol` runtimes assemble the response per-connection using Hyper, caching only the body bytes as a reference-counted `Bytes` value.
 
 ## Use Cases
 
@@ -168,4 +189,4 @@ cargo build --release --all-features          # enable all runtimes
 
 ## License
 
-Provided as-is for educational and practical use.
+MIT OR Apache-2.0
