@@ -3,6 +3,7 @@ mod http;
 mod options;
 mod pretty;
 mod tokio;
+mod response;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
 #[cfg(all(target_os = "linux", feature = "monoio"))]

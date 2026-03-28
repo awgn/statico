@@ -133,7 +133,7 @@ async fn handle_connection_monoio(
         return Err(anyhow::anyhow!("HTTP/2 not supported with monoio"));
     }
 
-    let mut response_buf = build_response_simple(&config).await?;
+    let mut response_buf = build_response(&config)?;
 
     // Single buffer strategy for maximum performance:
     // - In the common case (complete request in one read), we parse directly with zero copies
@@ -237,28 +237,4 @@ async fn handle_connection_monoio(
     }
 
     Ok(requests_served)
-}
-
-/// Build a static HTTP response and encode it to bytes once at connection start.
-/// This pre-encodes the response to avoid re-encoding on every request, significantly
-/// improving performance for static responses.
-async fn build_response_simple(config: &ServerConfig) -> Result<Vec<u8>> {
-    use http_wire::WireEncode;
-
-    // Build the HTTP response with configured status code
-    let mut builder = Response::builder().status(config.status);
-
-    // Add all configured headers
-    for (k, v) in &config.headers {
-        builder = builder.header(k, v);
-    }
-
-    // Add Content-Length header if body is present
-    if !config.body.is_empty() {
-        builder = builder.header(CONTENT_LENGTH, config.body.len());
-    }
-
-    // Build the response and encode it to wire format (HTTP/1.1 bytes)
-    let res = builder.body(Full::new(config.body.clone()))?;
-    Ok(res.encode()?.to_vec())
 }
