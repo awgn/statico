@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use futures::stream::{select_all, unfold};
-use http_body_util::BodyExt;
 use http_body_util::Either;
 use http_body_util::Full;
-use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::server::conn::http1;
 use hyper::server::conn::http2;
@@ -29,6 +27,7 @@ use crate::RESPONSE_BYTES;
 
 use crate::create_listener;
 use crate::options::Options;
+use crate::pretty::collect_request;
 use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
 use futures::StreamExt;
@@ -101,7 +100,7 @@ async fn tokio_srv(
 
                                     if meter {
                                         let req_bytes_total = if let Some(ref req) = collected_req {
-                                            let body_bytes = req.body().len();
+                                            let body_bytes = req.0.body().len();
                                             // For chunked encoding, calculate the wire format overhead
                                             let body_size = if is_chunked {
                                                 chunked_body_wire_size(body_bytes)
@@ -122,7 +121,10 @@ async fn tokio_srv(
 
                                     if verbose > 0 {
                                         if let Some(ref req) = collected_req {
-                                            println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                                            println!("↩ {}:\n{}", "request".bold(), req.0.pretty(verbose));
+                                            if let Some(ref trailers) = req.1 {
+                                                println!("{}", trailers.pretty(verbose));
+                                            }
                                         }
                                     }
                                     let mut builder = Response::builder().status(config.status);
@@ -260,15 +262,4 @@ pub fn run_thread_local(
             ))
             .await
     })
-}
-
-#[inline]
-pub async fn collect_request<B>(req: Request<B>) -> Result<Request<Bytes>, B::Error>
-where
-    B: http_body::Body,
-{
-    let (parts, body) = req.into_parts();
-    let collected = body.collect().await?;
-    let bytes = collected.to_bytes();
-    Ok(Request::from_parts(parts, bytes))
 }

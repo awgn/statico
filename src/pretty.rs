@@ -1,4 +1,6 @@
-use hyper::{Request, Response};
+use bytes::Bytes;
+use http_body_util::BodyExt;
+use hyper::{HeaderMap, Request, Response, header::HeaderValue};
 use owo_colors::OwoColorize;
 use std::fmt::{self, Write};
 
@@ -9,6 +11,10 @@ pub struct PrettyRequest<'a, B>(pub (&'a Request<B>, u8));
 /// Wrapper for pretty-printing a Response.
 ///
 pub struct PrettyResponse<'a, B>(pub (&'a Response<B>, u8));
+
+/// Wrapper for pretty-printing Headers.
+///
+pub struct PrettyHeaders<'a, T>(pub (&'a HeaderMap<T>, u8));
 
 /// Trait to check if a body is empty and get bytes
 pub trait BodyBytes {
@@ -79,11 +85,7 @@ where
         )?;
 
         // Headers
-        if verb > 1 {
-            for (name, value) in req.headers() {
-                writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
-            }
-        }
+        writeln!(f, "{}", req.headers().pretty(verb))?;
 
         // Body (only in verbose mode, and only if not empty)
         if verb > 2 && !req.body().is_empty() {
@@ -110,11 +112,7 @@ where
         writeln!(f, "{:?} {}", res.version(), res.status().bold())?;
 
         // Headers
-        if verb > 1 {
-            for (name, value) in res.headers() {
-                writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
-            }
-        }
+        writeln!(f, "{}", res.headers().pretty(verb))?;
 
         // Body (only in verbose mode, and only if not empty)
         if verb > 2 && !res.body().is_empty() {
@@ -125,6 +123,22 @@ where
             }
         }
 
+        Ok(())
+    }
+}
+
+impl<'a> fmt::Display for PrettyHeaders<'a, HeaderValue>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let headers = self.0 .0;
+        let verb = self.0 .1;
+
+        // Headers
+        if verb > 1 {
+            for (name, value) in headers {
+                writeln!(f, "{}: {}", name, value.to_str().unwrap_or("<binary>"))?;
+            }
+        }
         Ok(())
     }
 }
@@ -157,6 +171,17 @@ impl<B> PrettyPrint for Response<B> {
 
     fn pretty(&self, verbose: u8) -> PrettyResponse<'_, B> {
         PrettyResponse((self, verbose))
+    }
+}
+
+impl<T> PrettyPrint for HeaderMap<T> {
+    type Wrapper<'a>
+        = PrettyHeaders<'a, T>
+    where
+        T: 'a;
+
+    fn pretty(&self, verbose: u8) -> PrettyHeaders<'_, T> {
+        PrettyHeaders((self, verbose))
     }
 }
 
@@ -219,6 +244,19 @@ fn format_body_hexdump(body: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "|")?;
     }
     Ok(())
+}
+
+#[inline]
+pub async fn collect_request<B>(
+    req: Request<B>,
+) -> Result<(Request<Bytes>, Option<HeaderMap>), B::Error>
+where
+    B: http_body::Body,
+{
+    let (parts, body) = req.into_parts();
+    let collected = body.collect().await?;
+    let trailers = collected.trailers().cloned();
+    Ok((Request::from_parts(parts, collected.to_bytes()), trailers))
 }
 
 #[cfg(test)]
