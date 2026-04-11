@@ -1,5 +1,6 @@
 use crate::execute_delay;
 use crate::options::Options;
+use crate::pretty::PrettyPrint;
 use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
@@ -7,6 +8,8 @@ use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
 use anyhow::Result;
 use futures::stream::{select_all, StreamExt};
+use hyper::Response;
+use owo_colors::OwoColorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +42,7 @@ pub fn run_thread(
     }
 
     let meter = opts.meter;
+    let verbose = opts.verbose;
 
     tokio_uring::builder()
         .entries(num_entries) // Large ring size is critical for throughput
@@ -90,7 +94,7 @@ pub fn run_thread(
                         // Spawn task to handle the connection with io_uring
                         tokio_uring::spawn(async move {
                             if let Err(e) = handle_connection_uring(
-                                tcp_stream, port, config, false, meter, delay,
+                                tcp_stream, port, config, false, meter, delay, verbose,
                             )
                             .await
                             {
@@ -120,6 +124,7 @@ async fn handle_connection_uring(
     http2: bool,
     meter: bool,
     delay: Option<Duration>,
+    verbose: u8,
 ) -> Result<usize> {
     use http_wire::WireDecode;
     use std::mem::MaybeUninit;
@@ -198,9 +203,13 @@ async fn handle_connection_uring(
 
         loop {
             match http_wire::request::FullRequest::decode_uninit(&buf[parsed..], &mut headers) {
-                Ok((_, req_len)) => {
+                Ok((req, req_len)) => {
                     requests_served += 1;
                     parsed += req_len;
+
+                    if verbose > 0 {
+                        println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                    }
 
                     if meter {
                         REQUESTS.add(1);
@@ -212,6 +221,15 @@ async fn handle_connection_uring(
 
                     if let Some(d) = delay {
                         execute_delay(d).await;
+                    }
+
+                    if verbose > 0 {
+                        let mut print_builder = Response::builder().status(config.status);
+                        for (k, v) in &config.headers {
+                            print_builder = print_builder.header(k, v);
+                        }
+                        let print_resp = print_builder.body(config.body.clone()).unwrap();
+                        println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
                     }
 
                     // Reuse response_buf (tokio_uring returns it after the write)

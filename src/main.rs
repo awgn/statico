@@ -1,23 +1,22 @@
-mod delayed_body;
-mod http;
-mod options;
-mod pretty;
-mod tokio;
-mod response;
-#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
-mod tokio_uring;
-#[cfg(all(target_os = "linux", feature = "monoio"))]
-mod monoio;
-#[cfg(all(target_os = "linux", feature = "glommio"))]
-mod glommio;
-#[cfg(feature = "smol")]
-mod smol;
 #[cfg(feature = "compio")]
 mod compio;
+mod delayed_body;
+#[cfg(all(target_os = "linux", feature = "glommio"))]
+mod glommio;
+mod http;
+#[cfg(all(target_os = "linux", feature = "monoio"))]
+mod monoio;
+mod options;
+mod pretty;
+mod response;
+#[cfg(feature = "smol")]
+mod smol;
+mod tokio;
+#[cfg(all(target_os = "linux", feature = "tokio_uring"))]
+mod tokio_uring;
 
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};
-use std::net::IpAddr;
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
@@ -26,6 +25,7 @@ use dashmap::DashMap;
 use hyper::StatusCode;
 use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
+use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -317,7 +317,10 @@ pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::Tcp
     #[cfg(unix)]
     {
         if let Err(e) = socket.set_reuse_port(true) {
-            warn!("SO_REUSEPORT failed: {}. Continuing with SO_REUSEADDR only", e);
+            warn!(
+                "SO_REUSEPORT failed: {}. Continuing with SO_REUSEADDR only",
+                e
+            );
         }
     }
 
@@ -380,12 +383,14 @@ fn print_final_report(port_stats: bool) {
 
                 println!("\nPort {}:", port);
                 println!("  Requests:  {}", port_req);
-                println!("  Request bytes: {} ({:.3} GB)",
+                println!(
+                    "  Request bytes: {} ({:.3} GB)",
                     port_req_bytes,
                     port_req_bytes as f64 / 1_000_000_000.0
                 );
                 println!("  Responses: {}", port_res);
-                println!("  Response bytes: {} ({:.3} GB)",
+                println!(
+                    "  Response bytes: {} ({:.3} GB)",
                     port_res_bytes,
                     port_res_bytes as f64 / 1_000_000_000.0
                 );

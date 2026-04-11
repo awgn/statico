@@ -1,17 +1,20 @@
+use crate::create_listener;
 use crate::execute_delay;
 use crate::options::Options;
+use crate::pretty::PrettyPrint;
 use crate::response::build_response;
+use crate::ServerConfig;
 use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
-use crate::ServerConfig;
-use crate::create_listener;
 use anyhow::Result;
 use compio::io::{AsyncRead, AsyncWriteExt};
 use compio::net::TcpListener;
 use futures::stream::{select_all, unfold, StreamExt};
+use hyper::Response;
+use owo_colors::OwoColorize;
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -95,6 +98,7 @@ pub fn run_thread(
             }
 
             let config = config.clone();
+            let verbose = opts.verbose;
 
             // Spawn a local task to handle the connection.
             // compio's spawn() only requires F: Future + 'static (not Send),
@@ -102,7 +106,7 @@ pub fn run_thread(
             // Task::detach() lets the task run to completion independently.
             compio::runtime::spawn(async move {
                 if let Err(e) =
-                    handle_connection_compio(stream, port, config, meter, delay).await
+                    handle_connection_compio(stream, port, config, meter, delay, verbose).await
                 {
                     error!("Error handling compio connection: {}", e);
                 }
@@ -120,6 +124,7 @@ async fn handle_connection_compio(
     config: Arc<ServerConfig>,
     meter: bool,
     delay: Option<Duration>,
+    verbose: u8,
 ) -> Result<usize> {
     use http_wire::WireDecode;
 
@@ -193,9 +198,14 @@ async fn handle_connection_compio(
 
         loop {
             match http_wire::request::FullRequest::decode_uninit(&buf[parsed..], &mut headers) {
-                Ok((_, req_len)) => {
+                Ok((req, req_len)) => {
                     requests_served += 1;
                     parsed += req_len;
+
+                    if verbose > 0 {
+                        println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                        // trailers are not currently decoded by http_wire FullRequest, so not printed here
+                    }
 
                     if meter {
                         REQUESTS.add(1);
@@ -207,6 +217,15 @@ async fn handle_connection_compio(
 
                     if let Some(d) = delay {
                         execute_delay(d).await;
+                    }
+
+                    if verbose > 0 {
+                        let mut print_builder = Response::builder().status(config.status);
+                        for (k, v) in &config.headers {
+                            print_builder = print_builder.header(k, v);
+                        }
+                        let print_resp = print_builder.body(config.body.clone()).unwrap();
+                        println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
                     }
 
                     // write_all transfers ownership of response_buf to io_uring, then returns

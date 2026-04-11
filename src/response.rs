@@ -1,7 +1,7 @@
 use crate::ServerConfig;
-use http_body_util::Full;
-use hyper::{Response, header::CONTENT_LENGTH};
 use anyhow::Result;
+use http_body_util::Full;
+use hyper::{header::CONTENT_LENGTH, Response};
 
 /// Build a static HTTP response and encode it to bytes once at connection start.
 /// This pre-encodes the response to avoid re-encoding on every request, significantly

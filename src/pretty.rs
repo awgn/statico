@@ -1,20 +1,8 @@
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::{HeaderMap, Request, Response, header::HeaderValue};
+use hyper::{header::HeaderValue, HeaderMap, Request, Response};
 use owo_colors::OwoColorize;
 use std::fmt::{self, Write};
-
-/// Wrapper for pretty-printing a Request.
-///
-pub struct PrettyRequest<'a, B>(pub (&'a Request<B>, u8));
-
-/// Wrapper for pretty-printing a Response.
-///
-pub struct PrettyResponse<'a, B>(pub (&'a Response<B>, u8));
-
-/// Wrapper for pretty-printing Headers.
-///
-pub struct PrettyHeaders<'a, T>(pub (&'a HeaderMap<T>, u8));
 
 /// Trait to check if a body is empty and get bytes
 pub trait BodyBytes {
@@ -67,7 +55,25 @@ impl BodyBytes for bytes::Bytes {
     }
 }
 
-impl<'a, B> fmt::Display for PrettyRequest<'a, B>
+/// Wrapper for pretty-printing.
+///
+pub struct Pretty<'a, T>(pub (&'a T, u8));
+
+/// Extension trait for convenient pretty-printing of Request and Response.
+pub trait PrettyPrint
+where
+    Self: Sized,
+{
+    fn pretty<'a>(&'a self, verbose: u8) -> Pretty<'a, Self>;
+}
+
+impl<T> PrettyPrint for T {
+    fn pretty<'a>(&'a self, verbose: u8) -> Pretty<'a, T> {
+        Pretty((self, verbose))
+    }
+}
+
+impl<'a, B> fmt::Display for Pretty<'a, Request<B>>
 where
     B: BodyBytes,
 {
@@ -100,7 +106,7 @@ where
     }
 }
 
-impl<'a, B> fmt::Display for PrettyResponse<'a, B>
+impl<'a, B> fmt::Display for Pretty<'a, Response<B>>
 where
     B: BodyBytes,
 {
@@ -127,8 +133,7 @@ where
     }
 }
 
-impl<'a> fmt::Display for PrettyHeaders<'a, HeaderValue>
-{
+impl<'a> fmt::Display for Pretty<'a, HeaderMap<HeaderValue>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let headers = self.0 .0;
         let verb = self.0 .1;
@@ -143,45 +148,44 @@ impl<'a> fmt::Display for PrettyHeaders<'a, HeaderValue>
     }
 }
 
-/// Extension trait for convenient pretty-printing of Request and Response.
-pub trait PrettyPrint {
-    type Wrapper<'a>
-    where
-        Self: 'a;
+impl<'a, 'headers, 'buf> fmt::Display
+    for Pretty<'a, http_wire::request::FullRequest<'headers, 'buf>>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let req = self.0 .0;
+        let verb = self.0 .1;
 
-    fn pretty(&self, verbose: u8) -> Self::Wrapper<'_>;
-}
+        // Request line
+        writeln!(
+            f,
+            "{} {} HTTP/1.{}",
+            req.head.method.unwrap_or("UNKNOWN").bold().blue(),
+            req.head.path.unwrap_or("/"),
+            req.head.version.unwrap_or(1)
+        )?;
 
-impl<B> PrettyPrint for Request<B> {
-    type Wrapper<'a>
-        = PrettyRequest<'a, B>
-    where
-        B: 'a;
+        // Headers
+        if verb > 1 {
+            for header in req.head.headers.iter() {
+                writeln!(
+                    f,
+                    "{}: {}",
+                    header.name,
+                    String::from_utf8_lossy(header.value)
+                )?;
+            }
+        }
 
-    fn pretty(&self, verbose: u8) -> PrettyRequest<'_, B> {
-        PrettyRequest((self, verbose))
-    }
-}
+        // Body (only in verbose mode, and only if not empty)
+        if verb > 2 && !req.body.is_empty() {
+            writeln!(f)?;
+            match verb {
+                3 => format_body(req.body, f)?,
+                _ => format_body_hexdump(req.body, f)?,
+            }
+        }
 
-impl<B> PrettyPrint for Response<B> {
-    type Wrapper<'a>
-        = PrettyResponse<'a, B>
-    where
-        B: 'a;
-
-    fn pretty(&self, verbose: u8) -> PrettyResponse<'_, B> {
-        PrettyResponse((self, verbose))
-    }
-}
-
-impl<T> PrettyPrint for HeaderMap<T> {
-    type Wrapper<'a>
-        = PrettyHeaders<'a, T>
-    where
-        T: 'a;
-
-    fn pretty(&self, verbose: u8) -> PrettyHeaders<'_, T> {
-        PrettyHeaders((self, verbose))
+        Ok(())
     }
 }
 

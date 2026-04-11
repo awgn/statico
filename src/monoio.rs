@@ -1,13 +1,16 @@
 use crate::execute_delay;
 use crate::options::Options;
+use crate::pretty::PrettyPrint;
+use crate::response::build_response;
 use crate::PORT_COUNTERS;
 use crate::REQUESTS;
 use crate::REQUEST_BYTES;
 use crate::RESPONSES;
 use crate::RESPONSE_BYTES;
-use crate::response::build_response;
 use anyhow::Result;
 use futures::stream::{select_all, unfold, StreamExt};
+use hyper::Response;
+use owo_colors::OwoColorize;
 
 use monoio::io::AsyncReadRent;
 use monoio::io::AsyncWriteRentExt;
@@ -34,6 +37,7 @@ pub fn run_thread(
 
     let delay = opts.delay;
     let meter = opts.meter;
+    let verbose = opts.verbose;
 
     let num_entries = opts.uring_entries.next_power_of_two();
     let cqsize = num_entries * 2;
@@ -106,7 +110,8 @@ pub fn run_thread(
             // Spawn task to handle the connection with monoio
             monoio::spawn(async move {
                 if let Err(e) =
-                    handle_connection_monoio(stream, port, config, false, meter, delay).await
+                    handle_connection_monoio(stream, port, config, false, meter, delay, verbose)
+                        .await
                 {
                     error!("Error handling monoio connection: {}", e);
                 }
@@ -124,6 +129,7 @@ async fn handle_connection_monoio(
     http2: bool,
     meter: bool,
     delay: Option<Duration>,
+    verbose: u8,
 ) -> Result<usize> {
     use http_wire::WireDecode;
 
@@ -198,9 +204,13 @@ async fn handle_connection_monoio(
 
         loop {
             match http_wire::request::FullRequest::decode_uninit(&buf[parsed..], &mut headers) {
-                Ok((_, req_len)) => {
+                Ok((req, req_len)) => {
                     requests_served += 1;
                     parsed += req_len;
+
+                    if verbose > 0 {
+                        println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
+                    }
 
                     if meter {
                         REQUESTS.add(1);
@@ -212,6 +222,15 @@ async fn handle_connection_monoio(
 
                     if let Some(d) = delay {
                         execute_delay(d).await;
+                    }
+
+                    if verbose > 0 {
+                        let mut print_builder = Response::builder().status(config.status);
+                        for (k, v) in &config.headers {
+                            print_builder = print_builder.header(k, v);
+                        }
+                        let print_resp = print_builder.body(config.body.clone()).unwrap();
+                        println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
                     }
 
                     // Reuse response_buf (monoio returns it after the write)
