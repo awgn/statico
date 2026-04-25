@@ -19,15 +19,15 @@ The following benchmark compares Statico against other popular HTTP servers and 
 
 ![Performance Benchmark](pic/benchmark.png)
 
-### Benchmark Results (requests/second)
+### Benchmark Results 1024 connections (requests/second) 
 
 | Server | 1 thread | 2 threads | 4 threads |
 |--------|----------|-----------|-----------|
-| **statico (monoio)** | 656,517 | 922,825  | 1,358,045 |
+| **statico (monoio)** | 656,517 | 922,825  | 1,436,420 |
+| **statico (compio)** | 503,854 | 845,768 | 1,395,047 |
 | **statico (tokio-uring)** | 589,086 | 932,143 | 1,393,573 |
 | **statico (glommio)** | 400,036 | 816,936 | 1,140,535|
-| **statico (compio)** | 503,854 | 845,768 | 1,274,065 |
-| **statico (smol)** | 323,267 | 525,824 | 771,202 |
+| **statico (smol)** | 323,267 | 525,824 | 862,047 |
 | **statico** | 399,025 | 638,767 | 1,071,433 |
 | nginx (return) | 286,960 | 379,974 | 832,082 |
 | HAProxy | 181,127 | 253,796 | 515,162 |
