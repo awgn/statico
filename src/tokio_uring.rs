@@ -28,18 +28,10 @@ pub fn run_thread(
     use tracing::info;
 
     let num_entries = opts.uring_entries.next_power_of_two();
-    let cqsize = num_entries * 2;
     let delay = opts.delay;
 
     let mut uring = tokio_uring::uring_builder();
-
-    uring.setup_single_issuer().setup_cqsize(cqsize);
-
-    if let Some(idle) = opts.uring_sqpoll {
-        uring.setup_sqpoll(idle);
-    } else {
-        uring.setup_coop_taskrun().setup_taskrun_flag();
-    }
+    crate::configure_io_uring!(opts, uring);
 
     let meter = opts.meter;
     let verbose = opts.verbose;

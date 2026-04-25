@@ -14,6 +14,7 @@ mod smol;
 mod tokio;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
+mod uring;
 
 use crate::options::Options;
 use anyhow::{anyhow, Context, Result};

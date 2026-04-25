@@ -65,6 +65,7 @@ cargo build --release --features tokio_uring  # tokio-uring runtime
 cargo build --release --features monoio       # monoio runtime
 cargo build --release --features glommio      # glommio runtime
 cargo build --release --features smol         # smol runtime
+cargo build --release --features compio       # compio runtime (cross-platform)
 cargo build --release --features full         # all runtimes + mimalloc (named feature)
 cargo build --release --all-features          # all runtimes + mimalloc (cargo flag)
 ```
@@ -136,6 +137,8 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 ./target/release/statico --runtime tokio-uring --threads 8
 ./target/release/statico --runtime monoio --threads 8
 ./target/release/statico --runtime glommio --threads 8
+
+# compio runtime (Cross-platform completion-based I/O, requires feature flag)
 ./target/release/statico --runtime compio --threads 8
 
 # Add delay (latency simulation)
@@ -175,11 +178,11 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | `tokio-uring` | `tokio_uring` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `monoio` | `monoio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `glommio` | `glommio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
-| `compio` | `compio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
+| `compio` | `compio` | io_uring/IOCP; pre-built responses; HTTP pipelining; HTTP/1.1 only; **CPU-pinned** (one core per thread) |
 
-> **Note:** `tokio-uring`, `monoio`, `glommio` and `compio` are Linux-only and require the corresponding feature flags at compile time.
+> **Note:** `tokio-uring`, `monoio`, and `glommio` are Linux-only and require the corresponding feature flags at compile time. `compio` is cross-platform.
 
-### Pre-built responses (io_uring runtimes)
+### Pre-built responses (io_uring / completion-based runtimes)
 
 `tokio-uring`, `monoio`, `glommio` and `compio` encode the full HTTP response — status line, headers, and body — into a single byte buffer once at startup. Every subsequent request reuses that buffer without any allocation or serialization overhead.
 

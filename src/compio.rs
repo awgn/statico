@@ -33,7 +33,12 @@ pub fn run_thread(
     let meter = opts.meter;
     let tcp_nodelay = opts.tcp_nodelay;
 
-    let rt = compio::runtime::Runtime::new()?;
+    let mut proactor_builder = compio::driver::ProactorBuilder::new();
+    crate::configure_compio!(opts, proactor_builder);
+
+    let mut builder = compio::runtime::Runtime::builder();
+    builder.with_proactor(proactor_builder);
+    let rt = builder.build()?;
 
     rt.block_on(async move {
         // Create compio listeners from std listeners (SO_REUSEPORT already configured)
