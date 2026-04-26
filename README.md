@@ -24,7 +24,7 @@ The following benchmark compares Statico against other popular HTTP servers and 
 | Server | 1 thread | 2 threads | 4 threads |
 |--------|----------|-----------|-----------|
 | **statico (monoio)** | 656,517 | 922,825  | 1,436,420 |
-| **statico (compio)** | 503,854 | 845,768 | 1,395,047 |
+| **statico (compio)** | 652,743 | 845,768 | 1,395,047 |
 | **statico (tokio-uring)** | 589,086 | 932,143 | 1,393,573 |
 | **statico (glommio)** | 400,036 | 816,936 | 1,140,535|
 | **statico (smol)** | 323,267 | 525,824 | 862,047 |

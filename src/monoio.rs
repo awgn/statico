@@ -40,7 +40,8 @@ pub fn run_thread(
     let verbose = opts.verbose;
 
     let mut uring = io_uring::IoUring::builder();
-    crate::configure_io_uring!(opts, uring);
+    use crate::uring::UringConfigurator;
+    uring.configure_uring(opts);
 
     let builder: RuntimeBuilder<TimeDriver<IoUringDriver>> = monoio::RuntimeBuilder::new()
         .enable_all()

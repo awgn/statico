@@ -34,7 +34,8 @@ pub fn run_thread(
     let tcp_nodelay = opts.tcp_nodelay;
 
     let mut proactor_builder = compio::driver::ProactorBuilder::new();
-    crate::configure_compio!(opts, proactor_builder);
+    use crate::uring::UringConfigurator;
+    proactor_builder.configure_uring(opts);
 
     let mut builder = compio::runtime::Runtime::builder();
     builder.with_proactor(proactor_builder);

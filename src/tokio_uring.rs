@@ -31,7 +31,8 @@ pub fn run_thread(
     let delay = opts.delay;
 
     let mut uring = tokio_uring::uring_builder();
-    crate::configure_io_uring!(opts, uring);
+    use crate::uring::UringConfigurator;
+    uring.configure_uring(opts);
 
     let meter = opts.meter;
     let verbose = opts.verbose;
