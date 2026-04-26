@@ -39,7 +39,7 @@ async fn tokio_srv(
     config: Arc<ServerConfig>,
     opts: &Options,
     local: Option<&LocalSet>,
-) -> Result<(), anyhow::Error> {
+) -> Result<()> {
     // Convert std listeners to tokio listeners
     let listeners: Vec<TcpListener> = std_listeners
         .into_iter()

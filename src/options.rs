@@ -9,18 +9,18 @@ use std::str::FromStr;
 pub struct Ports(pub Vec<u16>);
 
 impl FromStr for Ports {
-    type Err = String;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let ports: Vec<u16> = NumberRangeOptions::<u16>::new()
             .with_list_sep(',')
             .with_range_sep('-')
             .parse(s)
-            .map_err(|e| format!("Invalid port range: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Invalid port range: {}", e))?
             .collect();
 
         if ports.is_empty() {
-            return Err("No ports specified".to_string());
+            return Err(anyhow::anyhow!("No ports specified"));
         }
 
         Ok(Ports(ports))
@@ -65,7 +65,7 @@ pub enum Runtime {
 }
 
 impl FromStr for Runtime {
-    type Err = String;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -81,7 +81,7 @@ impl FromStr for Runtime {
             "smol" => Ok(Runtime::Smol),
             #[cfg(feature = "compio")]
             "compio" => Ok(Runtime::Compio),
-            _ => Err(format!("Unknown runtime: {}", s)),
+            _ => Err(anyhow::anyhow!("Unknown runtime: {}", s)),
         }
     }
 }

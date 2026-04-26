@@ -2,6 +2,7 @@
 
 use crate::options::Options;
 
+#[allow(dead_code)]
 pub trait UringConfigurator {
     fn configure_uring(&mut self, opts: &Options);
 }

@@ -17,7 +17,7 @@ mod tokio_uring;
 mod uring;
 
 use crate::options::Options;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
@@ -138,25 +138,25 @@ fn main() -> Result<()> {
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     if matches!(opts.runtime, crate::options::Runtime::TokioUring) && opts.http2 {
-        return Err(anyhow!(
+        return Err(anyhow::anyhow!(
             "HTTP/2 is not currently supported with tokio-uring"
         ));
     }
     #[cfg(all(target_os = "linux", feature = "monoio"))]
     if matches!(opts.runtime, crate::options::Runtime::Monoio) && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with monoio"));
+        return Err(anyhow::anyhow!("HTTP/2 is not currently supported with monoio"));
     }
     #[cfg(all(target_os = "linux", feature = "glommio"))]
     if matches!(opts.runtime, crate::options::Runtime::Glommio) && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with glommio"));
+        return Err(anyhow::anyhow!("HTTP/2 is not currently supported with glommio"));
     }
     #[cfg(feature = "smol")]
     if matches!(opts.runtime, crate::options::Runtime::Smol) && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with smol"));
+        return Err(anyhow::anyhow!("HTTP/2 is not currently supported with smol"));
     }
     #[cfg(feature = "compio")]
     if matches!(opts.runtime, crate::options::Runtime::Compio) && opts.http2 {
-        return Err(anyhow!("HTTP/2 is not currently supported with compio"));
+        return Err(anyhow::anyhow!("HTTP/2 is not currently supported with compio"));
     }
 
     let args = Arc::new(opts);
