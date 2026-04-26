@@ -315,14 +315,43 @@ pub fn create_listener(addr: SocketAddr, opts: &Options) -> Result<std::net::Tcp
     socket.set_reuse_address(true)?;
 
     // Enable SO_REUSEPORT on Unix systems that support it
-    #[cfg(unix)]
-    {
-        if let Err(e) = socket.set_reuse_port(true) {
-            warn!(
-                "SO_REUSEPORT failed: {}. Continuing with SO_REUSEADDR only",
-                e
-            );
+    let res : std::io::Result<()> = {
+        // Enable SO_REUSEPORT for load balancing on natively supported systems
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "solaris",
+            target_os = "illumos"
+        ))]
+        {
+            socket.set_reuse_port(true)
         }
+
+        // Use the specific flag for FreeBSD
+        #[cfg(target_os = "freebsd")]
+        {
+            socket.set_reuse_port_lb(true)
+        }
+
+        // Do nothing on unsupported systems (like macOS or Windows)
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "solaris",
+            target_os = "illumos",
+            target_os = "freebsd"
+        )))]
+        {
+            Ok(())
+        }
+    };
+
+    // Single error handling block
+    if let Err(e) = res {
+        warn!(
+            "Load balancing socket option failed: {}. Continuing with SO_REUSEADDR only",
+            e
+        );
     }
 
     // Apply TCP_NODELAY if requested
