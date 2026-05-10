@@ -719,7 +719,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1064,9 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "http_wire"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10551b427a872f819702e9c45afde8722ab96bf5c88814f686391c13108ca616"
+checksum = "699384dad15e5b1330379cec7997f0a4da306fa0365fe344df505b31886d3a5c"
 dependencies = [
  "bytes",
  "futures",
@@ -1133,7 +1133,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -1801,7 +1801,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "statico"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "bytes",
