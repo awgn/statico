@@ -12,7 +12,6 @@ use owo_colors::OwoColorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::task::LocalSet;
 use tracing::{error, info};
 
 use crate::delayed_body::DelayedBody;
@@ -38,7 +37,6 @@ async fn tokio_srv(
     std_listeners: Vec<std::net::TcpListener>,
     config: Arc<ServerConfig>,
     opts: &Options,
-    local: Option<&LocalSet>,
 ) -> Result<()> {
     // Convert std listeners to tokio listeners
     let listeners: Vec<TcpListener> = std_listeners
@@ -190,11 +188,7 @@ async fn tokio_srv(
                                 error!("Error serving {} connection: {:?}", protocol, err);
                             }
                         };
-                        if let Some(local) = local {
-                            local.spawn_local(task);
-                        } else {
-                            tokio::task::spawn(task);
-                        }
+                        tokio::task::spawn(task);
                     },
                     Some(Err(e)) => {
                         error!("Thread {} accept error on listener: {}", id, e);
@@ -228,38 +222,5 @@ pub fn run_thread(
         .thread_name(format!("thread-{}", id))
         .build()?;
 
-    rt.block_on(tokio_srv(id, addr, std_listeners, config, opts, None))
-}
-
-pub fn run_thread_local(
-    id: usize,
-    addr: Vec<SocketAddr>,
-    config: Arc<ServerConfig>,
-    opts: &Options,
-) -> Result<()> {
-    // Standard Tokio single-thread runtime - create socket with SO_REUSEPORT
-    let std_listeners: Vec<std::net::TcpListener> = addr
-        .iter()
-        .map(|a| create_listener(a.clone(), opts))
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut builder = tokio::runtime::Builder::new_current_thread();
-    let rt = builder
-        .enable_all()
-        .thread_name(format!("thread-{}", id))
-        .build()?;
-
-    rt.block_on(async move {
-        let local = LocalSet::new();
-        local
-            .run_until(tokio_srv(
-                id,
-                addr,
-                std_listeners,
-                config,
-                opts,
-                Some(&local),
-            ))
-            .await
-    })
+    rt.block_on(tokio_srv(id, addr, std_listeners, config, opts))
 }

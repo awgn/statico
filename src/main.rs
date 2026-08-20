@@ -465,7 +465,6 @@ fn run_thread(
     use crate::options::Runtime;
     match opts.runtime {
         Runtime::Tokio => crate::tokio::run_thread(id, addr, config, opts),
-        Runtime::TokioLocal => crate::tokio::run_thread_local(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
         Runtime::TokioUring => crate::tokio_uring::run_thread(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "monoio"))]

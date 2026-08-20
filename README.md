@@ -88,15 +88,15 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | `-b, --body <BODY>` | Response body content (optional). Use `@filename` to load from file |
 | `-H, --header <HEADER>` | Custom headers in "Name: Value" format (can be specified multiple times) |
 | `-d, --delay <DELAY>` | Delay before sending the response (e.g., `100ms`, `1s`, `500us`) |
-| `--body-delay <DELAY>` | Delay before sending the body only — HTTP headers are flushed immediately (e.g., `100ms`, `1s`, `500us`). Supported by `tokio`, `tokio-local`, and `smol` runtimes. |
+| `--body-delay <DELAY>` | Delay before sending the body only — HTTP headers are flushed immediately (e.g., `100ms`, `1s`, `500us`). Supported by `tokio` and `smol` runtimes. |
 | `-m, --meter` | Enable real-time metrics: prints `req/s`, `req Gbps`, `res/s`, `res Gbps` every second. On exit (Ctrl+C) prints totals and, when multiple ports are used, per-port statistics. |
-| `-v, --verbose` | Increase verbosity (can be repeated; supported by `tokio`, `tokio-local`, and `smol` runtimes): |
+| `-v, --verbose` | Increase verbosity (can be repeated; supported by `tokio` and `smol` runtimes): |
 | | `-v` — request line + response status line |
 | | `-vv` — + request/response headers |
 | | `-vvv` — + body (readable text; non-printable bytes shown as inline hex) |
 | | `-vvvv` — + body as full hexdump |
 | `--http2` | Enable HTTP/2 (h2c) support (not supported with io_uring or smol runtimes) |
-| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `tokio-local`, `smol`, `tokio-uring`, `monoio`, `glommio`, `compio` (default: tokio) |
+| `--runtime <RUNTIME>` | Runtime to use: `tokio`, `smol`, `tokio-uring`, `monoio`, `glommio`, `compio` (default: tokio) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -173,7 +173,6 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | Runtime | Feature Flag | Notes |
 |---------|--------------|-------|
 | `tokio` (default) | — | Single-threaded Tokio runtime per worker; supports HTTP/1.1 and HTTP/2, verbose, body-delay |
-| `tokio-local` | — | Like `tokio` but uses `LocalSet`; same feature set |
 | `smol` | `smol` | Alternative async runtime via smol-hyper; supports HTTP/1.1 only; supports verbose and body-delay |
 | `tokio-uring` | `tokio_uring` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `monoio` | `monoio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
