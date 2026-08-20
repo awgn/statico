@@ -30,6 +30,7 @@ use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::io::Write;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -189,25 +190,51 @@ fn main() -> Result<()> {
 
     if args.meter {
         let handle = thread::spawn(move || {
+            const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            // Measurement window. Adjust freely (e.g. 500ms) without breaking
+            // the per-second math, which normalizes by the real elapsed time.
+            const SLOT: Duration = Duration::from_millis(500);
+            let mut spinner_idx = 0;
+
             let (mut prev_req, mut prev_req_bytes, mut prev_res, mut prev_res_bytes) =
                 read_counters();
-            loop {
-                thread::sleep(Duration::from_secs(1));
-                let (req, req_bytes, res, res_bytes) = read_counters();
 
-                let req_per_sec = req - prev_req;
-                let req_bytes_per_sec = req_bytes - prev_req_bytes;
-                let res_per_sec = res - prev_res;
-                let res_bytes_per_sec = res_bytes - prev_res_bytes;
+            let mut deadline = std::time::Instant::now();
+            let mut prev_instant = deadline;
+            loop {
+                deadline += SLOT;
+                let now = std::time::Instant::now();
+                if deadline > now {
+                    thread::sleep(deadline - now);
+                }
+
+                let (req, req_bytes, res, res_bytes) = read_counters();
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(prev_instant);
+                prev_instant = now;
+                let slot_duration = elapsed.as_secs_f64();
+
+                let req_per_sec = (req - prev_req).as_f64() / slot_duration;
+                let req_bytes_per_sec = (req_bytes - prev_req_bytes).as_f64() / slot_duration;
+                let res_per_sec = (res - prev_res).as_f64() / slot_duration;
+                let res_bytes_per_sec = (res_bytes - prev_res_bytes).as_f64() / slot_duration;
 
                 // Convert bytes/sec to Gbps (bytes * 8 / 1_000_000_000)
-                let req_gbps = (req_bytes_per_sec.as_f64() * 8.0) / 1_000_000_000.0;
-                let res_gbps = (res_bytes_per_sec.as_f64() * 8.0) / 1_000_000_000.0;
+                let req_gbps = (req_bytes_per_sec * 8.0) / 1_000_000_000.0;
+                let res_gbps = (res_bytes_per_sec * 8.0) / 1_000_000_000.0;
 
-                println!(
-                    "req/s: {}, req: {:.3} Gbps, res/s: {}, res: {:.3} Gbps",
-                    req_per_sec, req_gbps, res_per_sec, res_gbps
+                print!(
+                    "\r\x1b[K{} req/s: {}, req: {:.3} Gbps, res/s: {}, res: {:.3} Gbps",
+                    SPINNER[spinner_idx],
+                    req_per_sec as u64,
+                    req_gbps,
+                    res_per_sec as u64,
+                    res_gbps
                 );
+                let _ = std::io::stdout().flush();
+
+                spinner_idx = (spinner_idx + 1) % SPINNER.len();
+
                 prev_req = req;
                 prev_req_bytes = req_bytes;
                 prev_res = res;
