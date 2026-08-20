@@ -97,6 +97,8 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | | `-vvvv` — + body as full hexdump |
 | `--http2` | Enable HTTP/2 (h2c) support (not supported with io_uring or smol runtimes) |
 | `--runtime <RUNTIME>` | Runtime to use: `tokio`, `smol`, `tokio-uring`, `monoio`, `glommio`, `compio` (default: tokio) |
+| `--cert <PATH>` | Path to TLS certificate (PEM). Enables HTTPS (requires `--key`). Supported by the `tokio` runtime only. |
+| `--key <PATH>` | Path to TLS private key (PEM). Enables HTTPS (requires `--cert`). Supported by the `tokio` runtime only. |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -158,6 +160,12 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 
 # Real-time metrics with per-port breakdown on exit
 ./target/release/statico --ports 8080,8081 --meter
+
+# HTTPS (TLS) — supported by the `tokio` runtime only
+./target/release/statico --cert cert.pem --key key.pem --ports 8443
+
+# HTTPS with HTTP/2 (ALPN negotiates h2)
+./target/release/statico --cert cert.pem --key key.pem --http2
 ```
 
 ## Architecture
@@ -172,7 +180,7 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 
 | Runtime | Feature Flag | Notes |
 |---------|--------------|-------|
-| `tokio` (default) | — | Single-threaded Tokio runtime per worker; supports HTTP/1.1 and HTTP/2, verbose, body-delay |
+| `tokio` (default) | — | Single-threaded Tokio runtime per worker; supports HTTP/1.1 and HTTP/2, verbose, body-delay, and HTTPS (TLS) |
 | `smol` | `smol` | Alternative async runtime via smol-hyper; supports HTTP/1.1 only; supports verbose and body-delay |
 | `tokio-uring` | `tokio_uring` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
 | `monoio` | `monoio` | io_uring; pre-built responses; HTTP pipelining; HTTP/1.1 only |
