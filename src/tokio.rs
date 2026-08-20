@@ -12,6 +12,7 @@ use owo_colors::OwoColorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
 
 use crate::delayed_body::DelayedBody;
@@ -30,6 +31,10 @@ use crate::pretty::collect_request;
 use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
 use futures::StreamExt;
+
+/// Combined async read+write trait object, used to unify plain TCP and TLS streams.
+trait AsyncStream: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncStream for T {}
 
 async fn tokio_srv(
     id: usize,
@@ -64,18 +69,38 @@ async fn tokio_srv(
             incoming = all_listeners.next() => {
                 match incoming {
                     Some(Ok((tcp_stream, port))) => {
-                        let io = TokioIo::new(tcp_stream);
                         let config = config.clone();
                         let use_http2 = opts.http2;
                         let verbose = opts.verbose;
                         let delay = opts.delay;
                         let body_delay = opts.body_delay;
                         let meter = opts.meter;
+                        let tls = config.tls.clone();
 
                         let task = async move {
+                            // Optionally perform a TLS handshake before serving HTTP
+                            let io: TokioIo<Box<dyn AsyncStream + Unpin + Send>> =
+                                match tls {
+                                    Some(server_config) => {
+                                        let acceptor = TlsAcceptor::from(server_config);
+                                        match acceptor.accept(tcp_stream).await {
+                                            Ok(tls_stream) => TokioIo::new(Box::new(tls_stream)),
+                                            Err(e) => {
+                                                error!("TLS handshake error: {:?}", e);
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    None => TokioIo::new(Box::new(tcp_stream)),
+                                };
+
                             let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                                 let config = config.clone();
                                 async move {
+                                    // Capture the request's HTTP version before the request is
+                                    // consumed below, so the response version matches the request.
+                                    let req_version = req.version();
+
                                     let (head_size, is_chunked) = if meter {
                                         let hs = request_head_size(&req);
                                         let chunked = req
@@ -127,6 +152,11 @@ async fn tokio_srv(
                                     }
                                     let mut builder = Response::builder().status(config.status);
 
+                                    // The HTTP version is cosmetic metadata (HTTP/2 has no
+                                    // status line on the wire), but hyper's verbose output
+                                    // reflects it, so mirror the request's version.
+                                    builder = builder.version(req_version);
+
                                     // Add configured headers
                                     for (k, v) in &config.headers {
                                         builder = builder.header(k, v);
@@ -162,7 +192,9 @@ async fn tokio_srv(
                                         }
                                         if verbose > 0 {
                                             // Create a response with Bytes body for printing
-                                            let mut print_builder = Response::builder().status(resp.status());
+                                            let mut print_builder = Response::builder()
+                                                .status(resp.status())
+                                                .version(resp.version());
                                             for (k, v) in resp.headers() {
                                                 print_builder = print_builder.header(k, v);
                                             }

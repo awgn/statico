@@ -14,6 +14,7 @@ mod smol;
 mod tokio;
 #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
 mod tokio_uring;
+mod tls;
 mod uring;
 
 use crate::options::Options;
@@ -48,6 +49,7 @@ pub struct ServerConfig {
     pub status: StatusCode,
     pub body: Bytes,
     pub headers: Vec<(String, String)>,
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 pub static REQUESTS: Monotone = Monotone::new();
@@ -131,10 +133,22 @@ fn main() -> Result<()> {
 
     let status_code = StatusCode::from_u16(opts.status).context("Invalid status code")?;
 
+    // Load TLS configuration if both cert and key are provided
+    let tls = match (&opts.cert, &opts.key) {
+        (Some(cert), Some(key)) => Some(crate::tls::load_server_config(cert, key, opts.http2)?),
+        (None, None) => None,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Both --cert and --key must be provided to enable HTTPS"
+            ))
+        }
+    };
+
     let config = Arc::new(ServerConfig {
         status: status_code,
         body: body_content,
         headers: parsed_headers,
+        tls,
     });
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]

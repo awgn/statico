@@ -164,4 +164,12 @@ pub struct Options {
     /// Runtime to use
     #[arg(long, default_value = "tokio")]
     pub runtime: Runtime,
+
+    /// Path to TLS certificate (PEM) to enable HTTPS
+    #[arg(long)]
+    pub cert: Option<String>,
+
+    /// Path to TLS private key (PEM) to enable HTTPS
+    #[arg(long)]
+    pub key: Option<String>,
 }
