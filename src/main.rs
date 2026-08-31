@@ -247,9 +247,9 @@ fn main() -> Result<()> {
     if args.meter {
         let handle = thread::spawn(move || {
             const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            // Measurement window. Adjust freely (e.g. 500ms) without breaking
+            // Measurement window. Adjust freely (e.g. 1s) without breaking
             // the per-second math, which normalizes by the real elapsed time.
-            const SLOT: Duration = Duration::from_millis(500);
+            const SLOT: Duration = Duration::from_secs(1);
             let mut spinner_idx = 0;
 
             let (mut prev_req, mut prev_req_bytes, mut prev_res, mut prev_res_bytes) =
