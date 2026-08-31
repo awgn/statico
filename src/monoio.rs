@@ -2,11 +2,7 @@ use crate::execute_delay;
 use crate::options::Options;
 use crate::pretty::PrettyPrint;
 use crate::response::build_response;
-use crate::PORT_COUNTERS;
-use crate::REQUESTS;
-use crate::REQUEST_BYTES;
-use crate::RESPONSES;
-use crate::RESPONSE_BYTES;
+use crate::port_counters;
 use anyhow::Result;
 use futures::stream::{select_all, unfold, StreamExt};
 use hyper::Response;
@@ -130,6 +126,7 @@ async fn handle_connection_monoio(
     }
 
     let mut response_buf = build_response(&config)?;
+    let counters = meter.then(|| port_counters(port));
 
     // Single buffer strategy for maximum performance:
     // - In the common case (complete request in one read), we parse directly with zero copies
@@ -204,12 +201,8 @@ async fn handle_connection_monoio(
                         println!("↩ {}:\n{}", "request".bold(), req.pretty(verbose));
                     }
 
-                    if meter {
-                        REQUESTS.add(1);
-                        REQUEST_BYTES.add(req_len);
-                        let entry = PORT_COUNTERS.entry(port).or_default();
-                        entry.requests.add(1);
-                        entry.request_bytes.add(req_len);
+                    if let Some(c) = counters {
+                        c.record_request(req_len);
                     }
 
                     if let Some(d) = delay {
@@ -230,12 +223,8 @@ async fn handle_connection_monoio(
                     response_buf = buf_back;
                     res?;
 
-                    if meter {
-                        RESPONSES.add(1);
-                        RESPONSE_BYTES.add(response_buf.len());
-                        let entry = PORT_COUNTERS.entry(port).or_default();
-                        entry.responses.add(1);
-                        entry.response_bytes.add(response_buf.len());
+                    if let Some(c) = counters {
+                        c.record_response(response_buf.len());
                     }
                 }
                 Err(_) => break, // Incomplete request or end of batch

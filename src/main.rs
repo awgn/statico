@@ -23,15 +23,14 @@ use bytes::Bytes;
 use clap::Parser;
 use contatori::counters::monotone::Monotone;
 use contatori::counters::{CounterValue, Observable};
-use dashmap::DashMap;
 use hyper::StatusCode;
 use pingora_timeout::fast_timeout::fast_sleep;
 use socket2::{Domain, Protocol, Socket, Type};
+use std::collections::HashMap;
+use std::io::Write;
 use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::sync::Arc;
-use std::sync::LazyLock;
-use std::io::Write;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -57,7 +56,11 @@ pub static REQUEST_BYTES: Monotone = Monotone::new();
 pub static RESPONSES: Monotone = Monotone::new();
 pub static RESPONSE_BYTES: Monotone = Monotone::new();
 
-/// Per-port counters struct
+/// Per-port counters struct.
+///
+/// `Monotone` is already cache-line sharded, so concurrent `add` from many
+/// worker threads does not bounce a single atomic. The map that holds these
+/// is immutable after startup — never look it up through a lock on the hot path.
 #[derive(Default, Debug)]
 pub struct PortCounters {
     pub requests: Monotone,
@@ -66,8 +69,45 @@ pub struct PortCounters {
     pub response_bytes: Monotone,
 }
 
-/// Global DashMap indexed by port (u16) for per-port statistics
-pub static PORT_COUNTERS: LazyLock<DashMap<u16, PortCounters>> = LazyLock::new(|| DashMap::new());
+impl PortCounters {
+    #[inline]
+    pub fn record_request(&self, bytes: usize) {
+        REQUESTS.add(1);
+        REQUEST_BYTES.add(bytes);
+        self.requests.add(1);
+        self.request_bytes.add(bytes);
+    }
+
+    #[inline]
+    pub fn record_response(&self, bytes: usize) {
+        RESPONSES.add(1);
+        RESPONSE_BYTES.add(bytes);
+        self.responses.add(1);
+        self.response_bytes.add(bytes);
+    }
+}
+
+/// Per-port counters, populated once at startup. Immutable afterwards, so
+/// lookups are lock-free (`&'static PortCounters`).
+static PORT_COUNTERS: OnceLock<HashMap<u16, PortCounters>> = OnceLock::new();
+
+fn init_port_counters(ports: &[u16]) {
+    let mut map = HashMap::with_capacity(ports.len());
+    for &port in ports {
+        map.entry(port).or_default();
+    }
+    let _ = PORT_COUNTERS.set(map);
+}
+
+/// Lock-free lookup of the counters for `port`. Ports are registered at startup.
+#[inline]
+pub fn port_counters(port: u16) -> &'static PortCounters {
+    PORT_COUNTERS
+        .get()
+        .expect("port counters not initialized")
+        .get(&port)
+        .expect("port not registered")
+}
 
 fn main() -> Result<()> {
     // Initialize tracing subscriber
@@ -80,6 +120,7 @@ fn main() -> Result<()> {
 
     let opts = Options::parse();
     let total_ports = opts.ports.0.len();
+    init_port_counters(&opts.ports.0);
 
     // ... and balance them to threads
 
@@ -195,6 +236,7 @@ fn main() -> Result<()> {
         let addr = addrs[id].clone();
 
         let handle = thread::spawn(move || {
+            pin_worker(id);
             if let Err(e) = run_thread(id, addr, config, &args) {
                 error!("Thread {} error: {}", id, e);
             }
@@ -442,31 +484,48 @@ fn print_final_report(port_stats: bool) {
     if port_stats {
         // Print per-port statistics
         println!("\n--- Per-Port Statistics ---");
-        let mut ports: Vec<u16> = PORT_COUNTERS.iter().map(|e| *e.key()).collect();
-        ports.sort();
+        let Some(map) = PORT_COUNTERS.get() else {
+            return;
+        };
+        let mut ports: Vec<u16> = map.keys().copied().collect();
+        ports.sort_unstable();
 
         for port in ports {
-            if let Some(entry) = PORT_COUNTERS.get(&port) {
-                let port_req = entry.requests.value().as_u64();
-                let port_req_bytes = entry.request_bytes.value().as_u64();
-                let port_res = entry.responses.value().as_u64();
-                let port_res_bytes = entry.response_bytes.value().as_u64();
+            let Some(entry) = map.get(&port) else {
+                continue;
+            };
+            let port_req = entry.requests.value().as_u64();
+            let port_req_bytes = entry.request_bytes.value().as_u64();
+            let port_res = entry.responses.value().as_u64();
+            let port_res_bytes = entry.response_bytes.value().as_u64();
 
-                println!("\nPort {}:", port);
-                println!("  Requests:  {}", port_req);
-                println!(
-                    "  Request bytes: {} ({:.3} GB)",
-                    port_req_bytes,
-                    port_req_bytes as f64 / 1_000_000_000.0
-                );
-                println!("  Responses: {}", port_res);
-                println!(
-                    "  Response bytes: {} ({:.3} GB)",
-                    port_res_bytes,
-                    port_res_bytes as f64 / 1_000_000_000.0
-                );
-            }
+            println!("\nPort {}:", port);
+            println!("  Requests:  {}", port_req);
+            println!(
+                "  Request bytes: {} ({:.3} GB)",
+                port_req_bytes,
+                port_req_bytes as f64 / 1_000_000_000.0
+            );
+            println!("  Responses: {}", port_res);
+            println!(
+                "  Response bytes: {} ({:.3} GB)",
+                port_res_bytes,
+                port_res_bytes as f64 / 1_000_000_000.0
+            );
         }
+    }
+}
+
+fn pin_worker(id: usize) {
+    let Some(cores) = core_affinity::get_core_ids() else {
+        return;
+    };
+    if cores.is_empty() {
+        return;
+    }
+    let core = cores[id % cores.len()];
+    if !core_affinity::set_for_current(core) {
+        warn!("Failed to pin thread {} to core {}", id, core.id);
     }
 }
 

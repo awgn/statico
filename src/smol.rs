@@ -4,11 +4,7 @@ use crate::http::{chunked_body_wire_size, request_head_size, response_head_size}
 use crate::options::Options;
 use crate::pretty::{collect_request, PrettyPrint};
 use crate::ServerConfig;
-use crate::PORT_COUNTERS;
-use crate::REQUESTS;
-use crate::REQUEST_BYTES;
-use crate::RESPONSES;
-use crate::RESPONSE_BYTES;
+use crate::port_counters;
 
 use anyhow::Result;
 use futures::stream::{select_all, unfold};
@@ -86,13 +82,13 @@ pub fn run_thread(
             let delay = opts.delay;
             let body_delay = opts.body_delay;
             let meter = opts.meter;
+            let counters = meter.then(|| port_counters(port));
 
             spawn_ex
                 .spawn(async move {
                     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                         let config = config.clone();
                         async move {
-                            let port = port;
                             let (head_size, is_chunked) = if meter {
                                 let hs = request_head_size(&req);
                                 let chunked = req
@@ -126,11 +122,9 @@ pub fn run_thread(
                                 } else {
                                     head_size
                                 };
-                                REQUESTS.add(1);
-                                REQUEST_BYTES.add(req_bytes_total);
-                                let entry = PORT_COUNTERS.entry(port).or_default();
-                                entry.requests.add(1);
-                                entry.request_bytes.add(req_bytes_total);
+                                if let Some(c) = counters {
+                                    c.record_request(req_bytes_total);
+                                }
                             }
 
                             if verbose > 0 {
@@ -169,14 +163,9 @@ pub fn run_thread(
                             let resp = builder.body(body);
 
                             if let Ok(ref resp) = resp {
-                                if meter {
+                                if let Some(c) = counters {
                                     let head_size = response_head_size(resp, config.body.len());
-                                    let res_bytes_total = head_size + config.body.len();
-                                    RESPONSES.add(1);
-                                    RESPONSE_BYTES.add(res_bytes_total);
-                                    let entry = PORT_COUNTERS.entry(port).or_default();
-                                    entry.responses.add(1);
-                                    entry.response_bytes.add(res_bytes_total);
+                                    c.record_response(head_size + config.body.len());
                                 }
                                 if verbose > 0 {
                                     // Create a response with Bytes body for printing

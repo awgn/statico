@@ -19,11 +19,7 @@ use crate::delayed_body::DelayedBody;
 use crate::execute_delay;
 use crate::http::chunked_body_wire_size;
 use crate::http::{request_head_size, response_head_size};
-use crate::PORT_COUNTERS;
-use crate::REQUESTS;
-use crate::REQUEST_BYTES;
-use crate::RESPONSES;
-use crate::RESPONSE_BYTES;
+use crate::port_counters;
 
 use crate::create_listener;
 use crate::options::Options;
@@ -32,9 +28,28 @@ use crate::pretty::PrettyPrint;
 use crate::ServerConfig;
 use futures::StreamExt;
 
-/// Combined async read+write trait object, used to unify plain TCP and TLS streams.
-trait AsyncStream: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
-impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncStream for T {}
+async fn serve_http<I, S, Bd>(
+    io: TokioIo<I>,
+    service: S,
+    use_http2: bool,
+) -> Result<(), hyper::Error>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: hyper::service::Service<Request<hyper::body::Incoming>, Response = Response<Bd>>,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    S::Future: Send + 'static,
+    Bd: http_body::Body + Send + 'static,
+    Bd::Data: Send,
+    Bd::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    if use_http2 {
+        http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(io, service)
+            .await
+    } else {
+        http1::Builder::new().serve_connection(io, service).await
+    }
+}
 
 async fn tokio_srv(
     id: usize,
@@ -76,24 +91,10 @@ async fn tokio_srv(
                         let body_delay = opts.body_delay;
                         let meter = opts.meter;
                         let tls = config.tls.clone();
+                        // `'static` + Copy: no Arc/DashMap on the per-request path.
+                        let counters = meter.then(|| port_counters(port));
 
                         let task = async move {
-                            // Optionally perform a TLS handshake before serving HTTP
-                            let io: TokioIo<Box<dyn AsyncStream + Unpin + Send>> =
-                                match tls {
-                                    Some(server_config) => {
-                                        let acceptor = TlsAcceptor::from(server_config);
-                                        match acceptor.accept(tcp_stream).await {
-                                            Ok(tls_stream) => TokioIo::new(Box::new(tls_stream)),
-                                            Err(e) => {
-                                                error!("TLS handshake error: {:?}", e);
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    None => TokioIo::new(Box::new(tcp_stream)),
-                                };
-
                             let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                                 let config = config.clone();
                                 async move {
@@ -121,7 +122,7 @@ async fn tokio_srv(
                                         None
                                     };
 
-                                    if meter {
+                                    if let Some(c) = counters {
                                         let req_bytes_total = if let Some(ref req) = collected_req {
                                             let body_bytes = req.0.body().len();
                                             // For chunked encoding, calculate the wire format overhead
@@ -134,12 +135,7 @@ async fn tokio_srv(
                                         } else {
                                             head_size
                                         };
-
-                                        REQUESTS.add(1);
-                                        REQUEST_BYTES.add(req_bytes_total);
-                                        let entry = PORT_COUNTERS.entry(port).or_default();
-                                        entry.requests.add(1);
-                                        entry.request_bytes.add(req_bytes_total);
+                                        c.record_request(req_bytes_total);
                                     }
 
                                     if verbose > 0 {
@@ -181,14 +177,9 @@ async fn tokio_srv(
                                     let resp = builder.body(body);
 
                                     if let Ok(ref resp) = resp {
-                                        if meter {
+                                        if let Some(c) = counters {
                                             let head_size = response_head_size(resp, config.body.len());
-                                            let res_bytes_total = head_size + config.body.len();
-                                            RESPONSES.add(1);
-                                            RESPONSE_BYTES.add(res_bytes_total);
-                                            let entry = PORT_COUNTERS.entry(port).or_default();
-                                            entry.responses.add(1);
-                                            entry.response_bytes.add(res_bytes_total);
+                                            c.record_response(head_size + config.body.len());
                                         }
                                         if verbose > 0 {
                                             // Create a response with Bytes body for printing
@@ -207,12 +198,21 @@ async fn tokio_srv(
                                 }
                             });
 
-                            let result = if use_http2 {
-                                http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-                                    .serve_connection(io, service)
-                                    .await
+                            // Keep the plaintext path unboxed: a `Box<dyn AsyncStream>` on every
+                            // accept (introduced with TLS) allocated + virtualized the fast path.
+                            let result = if let Some(server_config) = tls {
+                                let acceptor = TlsAcceptor::from(server_config);
+                                match acceptor.accept(tcp_stream).await {
+                                    Ok(tls_stream) => {
+                                        serve_http(TokioIo::new(tls_stream), service, use_http2).await
+                                    }
+                                    Err(e) => {
+                                        error!("TLS handshake error: {:?}", e);
+                                        return;
+                                    }
+                                }
                             } else {
-                                http1::Builder::new().serve_connection(io, service).await
+                                serve_http(TokioIo::new(tcp_stream), service, use_http2).await
                             };
 
                             if let Err(err) = result {
