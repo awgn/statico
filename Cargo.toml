@@ -1,6 +1,6 @@
 [package]
 name = "statico"
-version = "0.16.1"
+version = "0.17.0"
 edition = "2021"
 authors = ["Nicola Bonelli <nicola@larthia.com>"]
 description = "A blazing-fast HTTP server implemented in Rust that serves static responses at lightning speed."
@@ -62,11 +62,15 @@ compio = ["dep:compio"]
 full = ["tokio_uring", "monoio", "glommio", "smol", "compio", "mimalloc"]
 
 [profile.release]
-debug = false
-opt-level = 3
-strip = true
-codegen-units = 1
-lto = true
+codegen-units    = 1
+debug            = false
+debug-assertions = false
+incremental      = false
+opt-level        = 3
+overflow-checks  = false
+lto              = "fat"
+panic            = "abort"
+strip            = true
 
 [dependencies.mimalloc]
 version = "0.1"
