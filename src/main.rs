@@ -4,6 +4,7 @@ mod delayed_body;
 #[cfg(all(target_os = "linux", feature = "glommio"))]
 mod glommio;
 mod http;
+mod mcp;
 #[cfg(all(target_os = "linux", feature = "monoio"))]
 mod monoio;
 mod options;
@@ -191,6 +192,22 @@ fn main() -> Result<()> {
         headers: parsed_headers,
         tls,
     });
+
+    // MCP everything mock: solo tokio + hyper, endpoint validato una volta qui.
+    if let Some(ref ep) = opts.mcp_everything {
+        if !ep.starts_with('/') {
+            return Err(anyhow::anyhow!(
+                "MCP endpoint must start with '/': got '{}'",
+                ep
+            ));
+        }
+        if !matches!(opts.runtime, crate::options::Runtime::Tokio) {
+            return Err(anyhow::anyhow!(
+                "--mcp-everything currently supports only --runtime tokio"
+            ));
+        }
+        info!("MCP everything mock enabled on endpoint '{}'", ep);
+    }
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]
     if matches!(opts.runtime, crate::options::Runtime::TokioUring) && opts.http2 {
@@ -536,6 +553,10 @@ fn run_thread(
     opts: &Options,
 ) -> Result<()> {
     use crate::options::Runtime;
+    // MCP mock: ignora il runtime (già validato = tokio) e usa il modulo dedicato.
+    if opts.mcp_everything.is_some() {
+        return crate::mcp::run_thread(id, addr, config.tls.clone(), opts);
+    }
     match opts.runtime {
         Runtime::Tokio => crate::tokio::run_thread(id, addr, config, opts),
         #[cfg(all(target_os = "linux", feature = "tokio_uring"))]

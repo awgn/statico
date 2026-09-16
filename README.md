@@ -99,6 +99,7 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | `--runtime <RUNTIME>` | Runtime to use: `tokio`, `smol`, `tokio-uring`, `monoio`, `glommio`, `compio` (default: tokio) |
 | `--cert <PATH>` | Path to TLS certificate (PEM). Enables HTTPS (requires `--key`). Supported by the `tokio` runtime only. |
 | `--key <PATH>` | Path to TLS private key (PEM). Enables HTTPS (requires `--cert`). Supported by the `tokio` runtime only. |
+| `--mcp-everything [<PATH>]` | Minimal MCP "everything" mock over Streamable HTTP (tokio only). Bare flag serves on `/mcp`; pass a path (e.g. `--mcp-everything /custom`) for a custom endpoint. Handles `initialize`, `notifications/initialized`, `tools/list`, `ping`, `tools/call` |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -166,6 +167,26 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 
 # HTTPS with HTTP/2 (ALPN negotiates h2)
 ./target/release/statico --cert cert.pem --key key.pem --http2
+```
+
+### MCP everything mock (Streamable HTTP, tokio only)
+
+```bash
+# Serve the minimal MCP mock on /mcp (port 8080)
+./target/release/statico --mcp-everything
+
+# Custom endpoint path
+./target/release/statico --mcp-everything /custom --ports 3000
+
+# Full handshake + tool call example
+curl -s http://127.0.0.1:8080/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}'
+curl -s http://127.0.0.1:8080/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' -w '%{http_code}\n'
+curl -s http://127.0.0.1:8080/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+curl -s http://127.0.0.1:8080/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}'
 ```
 
 ## Architecture

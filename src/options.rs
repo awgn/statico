@@ -172,4 +172,14 @@ pub struct Options {
     /// Path to TLS private key (PEM) to enable HTTPS
     #[arg(long)]
     pub key: Option<String>,
+
+    /// Enable minimal MCP "everything" mock (Streamable HTTP).
+    /// Optionally takes the endpoint path to serve MCP responses on.
+    /// Bare `--mcp-everything` enables it on `/mcp`; use
+    /// `--mcp-everything /foo` for a custom path.
+    /// Handles `initialize`, `notifications/initialized`, `tools/list`,
+    /// `ping` and `tools/call` at maximum speed.
+    /// Only supported with `--runtime tokio`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/mcp")]
+    pub mcp_everything: Option<String>,
 }
