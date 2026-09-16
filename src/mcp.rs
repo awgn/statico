@@ -338,20 +338,58 @@ fn string_inner(raw: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// Scans the top-level fields of a `tools/call` `params` object in a single pass,
+/// returning the raw `name` value and the raw `arguments` value (if present).
+/// `None` = malformed params or missing `name`.
+fn find_call_target(params: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+    let mut i = skip_ws(params, 0);
+    if *params.get(i)? != b'{' {
+        return None;
+    }
+    i += 1;
+    let mut name: Option<&[u8]> = None;
+    let mut arguments: Option<&[u8]> = None;
+    loop {
+        i = skip_ws(params, i);
+        if *params.get(i)? == b'}' {
+            return Some((name?, arguments));
+        }
+        let (ks, ke, next) = parse_string(params, i)?;
+        let key = &params[ks..ke];
+        i = skip_ws(params, next);
+        if *params.get(i)? != b':' {
+            return None;
+        }
+        i = skip_ws(params, i + 1);
+        let start = i;
+        i = skip_value(params, i)?;
+        if key == b"name" {
+            name = Some(&params[start..i]);
+        } else if key == b"arguments" {
+            arguments = Some(&params[start..i]);
+        }
+        i = skip_ws(params, i);
+        match *params.get(i)? {
+            b',' => i += 1,
+            b'}' => return Some((name?, arguments)),
+            _ => return None,
+        }
+    }
+}
+
 /// Handles `tools/call`: dispatches to `answer` (always 42) or `echo` (returns
 /// the `text` argument verbatim).
 /// Returns `None` when the params are missing or malformed (caller maps it to
 /// JSON-RPC `-32602 Invalid params`). Unknown tool names produce a result
 /// with `isError: true` instead of a protocol error.
 fn handle_tools_call(id: &[u8], params_raw: Option<&[u8]>) -> Option<Vec<u8>> {
-    let params = params_raw?;
-    let name_inner = string_inner(find_raw_value(params, b"name")?)?;
+    let (name_raw, arguments_raw) = find_call_target(params_raw?)?;
+    let name_inner = string_inner(name_raw)?;
     if name_inner == b"answer" {
         return Some(build_with_id(id, TOOLS_CALL_ANSWER_RESULT));
     }
     if name_inner == b"echo" {
-        let args = find_raw_value(params, b"arguments")?;
-        let text_inner = string_inner(find_raw_value(args, b"text")?)?;
+        let text_inner = string_inner(find_raw_value(arguments_raw?, b"text")?)?;
         // `text_inner` is the already-escaped content of a JSON string, so it
         // can be spliced verbatim into the output text field.
         return Some(build_text_result(id, text_inner));
@@ -511,6 +549,9 @@ fn dispatch(body: &[u8]) -> (StatusCode, Option<Vec<u8>>) {
     )
 }
 
+/// Cold path only (unreadable request body): kept out of line so the hot path
+/// stays tight in icache.
+#[cold]
 fn json_response(status: StatusCode, body: Vec<u8>) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -531,6 +572,7 @@ fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
 /// Logs the head of a request rejected with 404/405 before its body is read.
 /// The main server (`tokio.rs`) dumps the whole collected request instead;
 /// here the body is deliberately left unread, so only the head is shown.
+#[cold]
 fn log_request_head(req: &Request<hyper::body::Incoming>, verbose: u8) {
     println!(
         "↩ {}:\n{} {} {:?}",
@@ -548,6 +590,7 @@ fn log_request_head(req: &Request<hyper::body::Incoming>, verbose: u8) {
 
 /// Logs a response the same way the main server does (see `tokio.rs`):
 /// status line, headers (`-vv` and up) and body (`-vvv` and up, via `pretty`).
+#[cold]
 fn log_response<B>(resp: &Response<B>, body: Bytes, verbose: u8) {
     let mut print_builder = Response::builder()
         .status(resp.status())
@@ -654,7 +697,7 @@ async fn handle_conn(
                     return Ok(resp);
                 }
             };
-            let collected = collected_req.body().clone();
+            let collected: &[u8] = collected_req.body();
 
             if let Some(c) = counters {
                 let body_size = if is_chunked {
@@ -672,7 +715,7 @@ async fn handle_conn(
                 }
             }
 
-            let (status, body_opt) = dispatch(&collected);
+            let (status, body_opt) = dispatch(collected);
 
             let mut builder = Response::builder().status(status).version(req_version);
             if let Some(body) = body_opt {
@@ -927,6 +970,142 @@ mod tests {
         let b = b.unwrap();
         let s = String::from_utf8_lossy(&b);
         assert!(s.contains("-32602"), "{s}");
+    }
+
+    #[test]
+    fn empty_body_is_parse_error() {
+        let (st, b) = post(b"");
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32700"), "{s}");
+    }
+
+    #[test]
+    fn batch_array_is_parse_error() {
+        let (st, b) = post(br#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#);
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32700"), "{s}");
+    }
+
+    #[test]
+    fn request_without_method_is_invalid_request() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":5}"#);
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32600"), "{s}");
+    }
+
+    #[test]
+    fn methodless_notification_is_discarded() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","foo":1}"#);
+        assert_eq!(st, StatusCode::ACCEPTED);
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn notifications_with_id_are_still_discarded() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":6,"method":"notifications/cancelled"}"#);
+        assert_eq!(st, StatusCode::ACCEPTED);
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn null_id_is_treated_as_notification() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#);
+        assert_eq!(st, StatusCode::ACCEPTED);
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn unknown_method_without_id_is_discarded() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","method":"resources/list"}"#);
+        assert_eq!(st, StatusCode::ACCEPTED);
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn initialize_without_params_uses_default_version() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains(r#""protocolVersion":"2025-06-18""#), "{s}");
+    }
+
+    #[test]
+    fn tools_call_without_params_is_invalid_params() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":14,"method":"tools/call"}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32602"), "{s}");
+    }
+
+    #[test]
+    fn tools_call_non_string_name_is_invalid_params() {
+        let (st, b) =
+            post(br#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":42}}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32602"), "{s}");
+    }
+
+    #[test]
+    fn tools_call_echo_non_string_text_is_invalid_params() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"echo","arguments":{"text":123}}}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32602"), "{s}");
+    }
+
+    #[test]
+    fn tools_call_echo_missing_arguments_is_invalid_params() {
+        let (st, b) =
+            post(br#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"echo"}}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("-32602"), "{s}");
+    }
+
+    #[test]
+    fn tools_call_string_id_is_spliced_quoted() {
+        let (st, b) = post(
+            br#"{"jsonrpc":"2.0","id":"x-1","method":"tools/call","params":{"name":"answer"}}"#,
+        );
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains(r#""id":"x-1""#), "{s}");
+        assert!(s.contains(r#""text":"42""#), "{s}");
+    }
+
+    #[test]
+    fn tools_call_echo_empty_string() {
+        let (st, b) = post(br#"{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"echo","arguments":{"text":""}}}"#);
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains(r#""text":"""#), "{s}");
+        assert!(s.contains(r#""isError":false"#), "{s}");
+    }
+
+    #[test]
+    fn whitespace_around_tokens_is_accepted() {
+        let (st, b) = post(
+            b"{\n  \"jsonrpc\" : \"2.0\" ,\n  \"id\" : 20 ,\n  \"method\" : \"tools/call\" ,\n  \"params\" : { \"name\" : \"echo\" , \"arguments\" : { \"text\" : \"spaced\" } }\n}",
+        );
+        assert_eq!(st, StatusCode::OK);
+        let b = b.unwrap();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains(r#""id":20"#), "{s}");
+        assert!(s.contains(r#""text":"spaced""#), "{s}");
     }
 
     #[test]
