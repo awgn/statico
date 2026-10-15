@@ -182,4 +182,10 @@ pub struct Options {
     /// Only supported with `--runtime tokio`.
     #[arg(long, num_args = 0..=1, default_missing_value = "/mcp")]
     pub mcp_everything: Option<String>,
+
+    /// Stream MCP `tools/call` responses as `text/event-stream` (SSE) instead of `application/json`.
+    /// Optionally takes the number of intermediate `notifications/message` SSE events
+    /// to emit as separate HTTP chunks before the final JSON-RPC response (default: 0).
+    #[arg(long, value_name = "EVENTS", num_args = 0..=1, default_missing_value = "0")]
+    pub mcp_sse: Option<usize>,
 }

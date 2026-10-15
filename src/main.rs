@@ -193,6 +193,12 @@ fn main() -> Result<()> {
         tls,
     });
 
+    if opts.mcp_sse.is_some() && opts.mcp_everything.is_none() {
+        return Err(anyhow::anyhow!(
+            "--mcp-sse requires --mcp-everything to be enabled"
+        ));
+    }
+
     // MCP everything mock: solo tokio + hyper, endpoint validato una volta qui.
     if let Some(ref ep) = opts.mcp_everything {
         if !ep.starts_with('/') {
@@ -206,7 +212,14 @@ fn main() -> Result<()> {
                 "--mcp-everything currently supports only --runtime tokio"
             ));
         }
-        info!("MCP everything mock enabled on endpoint '{}'", ep);
+        if let Some(n) = opts.mcp_sse {
+            info!(
+                "MCP everything mock enabled on endpoint '{}' (tools/call via SSE, {} intermediate notifications)",
+                ep, n
+            );
+        } else {
+            info!("MCP everything mock enabled on endpoint '{}'", ep);
+        }
     }
 
     #[cfg(all(target_os = "linux", feature = "tokio_uring"))]

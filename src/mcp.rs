@@ -9,7 +9,8 @@
 //! - `notifications/*` (including `notifications/initialized`) -> 202, no body
 //! - `tools/list` -> 200 with the supported tools (`answer`, `echo`)
 //! - `ping` -> 200 at maximum speed (static body + spliced `id`)
-//! - `tools/call` -> 200 invoking `answer` or `echo` (`id` spliced, result built)
+//! - `tools/call` -> 200 invoking `answer` or `echo` (`id` spliced, result built);
+//!   supports both `application/json` (default) and `text/event-stream` (`--mcp-sse [N]`)
 //! - unknown with `id` -> 200 with JSON-RPC `-32601`; without `id` -> 202
 //! - malformed JSON -> 400 with `-32700`
 //!
@@ -22,15 +23,18 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures::stream::{select_all, unfold};
+use http_body::{Body, Frame, SizeHint};
 use http_body_util::Full;
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use hyper::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use owo_colors::OwoColorize;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::error;
@@ -43,10 +47,14 @@ use crate::pretty::{collect_request, PrettyPrint};
 use futures::StreamExt;
 
 const JSON_CONTENT_TYPE: &str = "application/json";
+const SSE_CONTENT_TYPE: &str = "text/event-stream";
+const SSE_CACHE_CONTROL: &str = "no-cache";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "statico-everything";
 
 const PREFIX: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":";
+const SSE_EVENT_PREFIX: &[u8] = b"event: message\ndata: ";
+const SSE_EVENT_SUFFIX: &[u8] = b"\n\n";
 
 const INIT_RESULT_PREFIX: &[u8] = b",\"result\":{\"protocolVersion\":\"";
 const INIT_RESULT_MID: &[u8] =
@@ -76,6 +84,75 @@ const ERR_INVALID_PARAMS_SUFFIX: &[u8] =
     b",\"error\":{\"code\":-32602,\"message\":\"Invalid params\"}}";
 const ERR_METHOD_PREFIX: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":";
 const ERR_METHOD_SUFFIX: &[u8] = b",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}";
+
+/// Response body supporting both single-buffer (`Full<Bytes>`) and multi-chunk SSE streaming.
+enum McpBody {
+    Full(Full<Bytes>),
+    Sse {
+        notifications: Arc<[Bytes]>,
+        idx: usize,
+        final_event: Option<Bytes>,
+    },
+}
+
+impl Body for McpBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    #[inline]
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<std::result::Result<Frame<Self::Data>, Self::Error>>> {
+        match self.get_mut() {
+            McpBody::Full(full) => Pin::new(full).poll_frame(cx),
+            McpBody::Sse {
+                notifications,
+                idx,
+                final_event,
+            } => {
+                if *idx < notifications.len() {
+                    let chunk = notifications[*idx].clone();
+                    *idx += 1;
+                    Poll::Ready(Some(Ok(Frame::data(chunk))))
+                } else if let Some(last) = final_event.take() {
+                    Poll::Ready(Some(Ok(Frame::data(last))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        match self {
+            McpBody::Full(full) => full.is_end_stream(),
+            McpBody::Sse { final_event, .. } => final_event.is_none(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            McpBody::Full(full) => full.size_hint(),
+            // Unknown exact size forces Hyper HTTP/1.1 to use `Transfer-Encoding: chunked`.
+            McpBody::Sse { .. } => SizeHint::default(),
+        }
+    }
+}
+
+/// Pre-builds the `count` intermediate SSE notification events once at startup.
+fn build_sse_notifications(count: usize) -> Arc<[Bytes]> {
+    (1..=count)
+        .map(|i| {
+            Bytes::from(format!(
+                "event: message\ndata: {{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{{\"level\":\"info\",\"data\":\"step {i}/{count}\"}}}}\n\n"
+            ))
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
 
 #[inline]
 fn is_ws(b: u8) -> bool {
@@ -379,55 +456,70 @@ fn find_call_target(params: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
 
 /// Handles `tools/call`: dispatches to `answer` (always 42) or `echo` (returns
 /// the `text` argument verbatim).
+/// When `sse` is true, the JSON-RPC response is framed directly as an SSE event
+/// (`event: message\ndata: <json>\n\n`) in a single allocation.
 /// Returns `None` when the params are missing or malformed (caller maps it to
 /// JSON-RPC `-32602 Invalid params`). Unknown tool names produce a result
 /// with `isError: true` instead of a protocol error.
-fn handle_tools_call(id: &[u8], params_raw: Option<&[u8]>) -> Option<Vec<u8>> {
+fn handle_tools_call(id: &[u8], params_raw: Option<&[u8]>, sse: bool) -> Option<Vec<u8>> {
     let (name_raw, arguments_raw) = find_call_target(params_raw?)?;
     let name_inner = string_inner(name_raw)?;
+    let (pre, suf): (&[u8], &[u8]) = if sse {
+        (SSE_EVENT_PREFIX, SSE_EVENT_SUFFIX)
+    } else {
+        (b"", b"")
+    };
     if name_inner == b"answer" {
-        return Some(build_with_id(id, TOOLS_CALL_ANSWER_RESULT));
+        return Some(build_framed_with_id(pre, id, TOOLS_CALL_ANSWER_RESULT, suf));
     }
     if name_inner == b"echo" {
         let text_inner = string_inner(find_raw_value(arguments_raw?, b"text")?)?;
         // `text_inner` is the already-escaped content of a JSON string, so it
         // can be spliced verbatim into the output text field.
-        return Some(build_text_result(id, text_inner));
+        return Some(build_text_result(pre, id, text_inner, suf));
     }
-    Some(build_unknown_tool(id, name_inner))
+    Some(build_unknown_tool(pre, id, name_inner, suf))
 }
 
-fn build_text_result(id: &[u8], text: &[u8]) -> Vec<u8> {
+fn build_text_result(pre: &[u8], id: &[u8], text: &[u8], suf: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(
-        PREFIX.len()
+        pre.len()
+            + PREFIX.len()
             + id.len()
             + TOOLS_CALL_TEXT_PREFIX.len()
             + text.len()
-            + TOOLS_CALL_TEXT_SUFFIX.len(),
+            + TOOLS_CALL_TEXT_SUFFIX.len()
+            + suf.len(),
     );
+    out.extend_from_slice(pre);
     out.extend_from_slice(PREFIX);
     out.extend_from_slice(id);
     out.extend_from_slice(TOOLS_CALL_TEXT_PREFIX);
     out.extend_from_slice(text);
     out.extend_from_slice(TOOLS_CALL_TEXT_SUFFIX);
+    out.extend_from_slice(suf);
     out
 }
 
-fn build_unknown_tool(id: &[u8], name_inner: &[u8]) -> Vec<u8> {
+fn build_unknown_tool(pre: &[u8], id: &[u8], name_inner: &[u8], suf: &[u8]) -> Vec<u8> {
     // `name_inner` is the already-escaped content of a JSON string, so copying
     // it verbatim into the output string cannot break out of the quotes.
     let mut out = Vec::with_capacity(
-        PREFIX.len()
+        pre.len()
+            + PREFIX.len()
             + id.len()
             + TOOLS_CALL_UNKNOWN_PREFIX.len()
             + name_inner.len()
-            + TOOLS_CALL_UNKNOWN_SUFFIX.len(),
+            + TOOLS_CALL_UNKNOWN_SUFFIX.len()
+            + suf.len(),
     );
+    out.extend_from_slice(pre);
     out.extend_from_slice(PREFIX);
     out.extend_from_slice(id);
     out.extend_from_slice(TOOLS_CALL_UNKNOWN_PREFIX);
     out.extend_from_slice(name_inner);
     out.extend_from_slice(TOOLS_CALL_UNKNOWN_SUFFIX);
+    out.extend_from_slice(suf);
     out
 }
 
@@ -446,10 +538,17 @@ fn is_notifications(method: &[u8]) -> bool {
 }
 
 fn build_with_id(id: &[u8], result_fragment: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(PREFIX.len() + id.len() + result_fragment.len());
+    build_framed_with_id(b"", id, result_fragment, b"")
+}
+
+fn build_framed_with_id(pre: &[u8], id: &[u8], result_fragment: &[u8], suf: &[u8]) -> Vec<u8> {
+    let mut out =
+        Vec::with_capacity(pre.len() + PREFIX.len() + id.len() + result_fragment.len() + suf.len());
+    out.extend_from_slice(pre);
     out.extend_from_slice(PREFIX);
     out.extend_from_slice(id);
     out.extend_from_slice(result_fragment);
+    out.extend_from_slice(suf);
     out
 }
 
@@ -486,35 +585,40 @@ fn build_error_with_id(id: &[u8], suffix: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Returns (status, body). Empty body = no JSON Tx.
-fn dispatch(body: &[u8]) -> (StatusCode, Option<Vec<u8>>) {
+enum DispatchOutput {
+    Empty(StatusCode),
+    Json(StatusCode, Vec<u8>),
+    SseToolsCall(Vec<u8>),
+}
+
+fn dispatch_rpc(body: &[u8], sse_tools_call: bool) -> DispatchOutput {
     if body.is_empty() {
-        return (StatusCode::BAD_REQUEST, Some(ERR_PARSE.to_vec()));
+        return DispatchOutput::Json(StatusCode::BAD_REQUEST, ERR_PARSE.to_vec());
     }
     let Some(rpc) = parse_rpc(body) else {
-        return (StatusCode::BAD_REQUEST, Some(ERR_PARSE.to_vec()));
+        return DispatchOutput::Json(StatusCode::BAD_REQUEST, ERR_PARSE.to_vec());
     };
 
     let Some(method) = rpc.method else {
         // notification without method -> accept; request without method -> Invalid Request
         if has_id(rpc.id_raw) {
             let id = rpc.id_raw.unwrap_or(b"null");
-            return (
+            return DispatchOutput::Json(
                 StatusCode::BAD_REQUEST,
-                Some(build_error_with_id(id, ERR_INVALID_SUFFIX)),
+                build_error_with_id(id, ERR_INVALID_SUFFIX),
             );
         }
-        return (StatusCode::ACCEPTED, None);
+        return DispatchOutput::Empty(StatusCode::ACCEPTED);
     };
 
     if is_notifications(method) {
         // notifications/initialized and friends: discard, no Tx
-        return (StatusCode::ACCEPTED, None);
+        return DispatchOutput::Empty(StatusCode::ACCEPTED);
     }
 
     // From here on: only requests with an id produce a Tx; notifications are just accepted.
     if !has_id(rpc.id_raw) {
-        return (StatusCode::ACCEPTED, None);
+        return DispatchOutput::Empty(StatusCode::ACCEPTED);
     }
     let id = rpc.id_raw.unwrap_or(b"null");
 
@@ -523,49 +627,64 @@ fn dispatch(body: &[u8]) -> (StatusCode, Option<Vec<u8>>) {
             .params_raw
             .and_then(find_protocol_version)
             .unwrap_or(DEFAULT_PROTOCOL_VERSION.as_bytes());
-        return (StatusCode::OK, Some(build_initialize(id, version)));
+        return DispatchOutput::Json(StatusCode::OK, build_initialize(id, version));
     }
     if method == b"tools/list" {
-        return (StatusCode::OK, Some(build_with_id(id, TOOLS_LIST_RESULT)));
+        return DispatchOutput::Json(StatusCode::OK, build_with_id(id, TOOLS_LIST_RESULT));
     }
     if method == b"ping" {
-        return (StatusCode::OK, Some(build_with_id(id, PING_RESULT)));
+        return DispatchOutput::Json(StatusCode::OK, build_with_id(id, PING_RESULT));
     }
     if method == b"tools/call" {
-        match handle_tools_call(id, rpc.params_raw) {
-            Some(body) => return (StatusCode::OK, Some(body)),
+        match handle_tools_call(id, rpc.params_raw, sse_tools_call) {
+            Some(body) => {
+                if sse_tools_call {
+                    return DispatchOutput::SseToolsCall(body);
+                }
+                return DispatchOutput::Json(StatusCode::OK, body);
+            }
             None => {
-                return (
+                return DispatchOutput::Json(
                     StatusCode::OK,
-                    Some(build_error_with_id(id, ERR_INVALID_PARAMS_SUFFIX)),
+                    build_error_with_id(id, ERR_INVALID_PARAMS_SUFFIX),
                 );
             }
         }
     }
 
-    (
+    DispatchOutput::Json(
         StatusCode::OK,
-        Some(build_error_with_id(id, ERR_METHOD_SUFFIX)),
+        build_error_with_id(id, ERR_METHOD_SUFFIX),
     )
+}
+
+/// Returns (status, body) for JSON-mode dispatch. Empty body = no JSON Tx.
+#[cfg(test)]
+fn dispatch(body: &[u8]) -> (StatusCode, Option<Vec<u8>>) {
+    match dispatch_rpc(body, false) {
+        DispatchOutput::Empty(st) => (st, None),
+        DispatchOutput::Json(st, b) => (st, Some(b)),
+        DispatchOutput::SseToolsCall(b) => (StatusCode::OK, Some(b)),
+    }
 }
 
 /// Cold path only (unreadable request body): kept out of line so the hot path
 /// stays tight in icache.
 #[cold]
-fn json_response(status: StatusCode, body: Vec<u8>) -> Response<Full<Bytes>> {
+fn json_response(status: StatusCode, body: Vec<u8>) -> Response<McpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
         .header(CONTENT_LENGTH, body.len())
-        .body(Full::new(Bytes::from(body)))
+        .body(McpBody::Full(Full::new(Bytes::from(body))))
         .unwrap()
 }
 
-fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
+fn empty_response(status: StatusCode) -> Response<McpBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_LENGTH, 0u32)
-        .body(Full::new(Bytes::new()))
+        .body(McpBody::Full(Full::new(Bytes::new())))
         .unwrap()
 }
 
@@ -602,6 +721,17 @@ fn log_response<B>(resp: &Response<B>, body: Bytes, verbose: u8) {
     println!("↪ {}:\n{}", "response".bold(), print_resp.pretty(verbose));
 }
 
+#[cold]
+fn concat_sse_for_log(notifications: &[Bytes], final_event: &[u8]) -> Bytes {
+    let total: usize = notifications.iter().map(Bytes::len).sum::<usize>() + final_event.len();
+    let mut buf = Vec::with_capacity(total);
+    for n in notifications {
+        buf.extend_from_slice(n);
+    }
+    buf.extend_from_slice(final_event);
+    Bytes::from(buf)
+}
+
 async fn serve_http<I, S, Bd>(
     io: TokioIo<I>,
     service: S,
@@ -635,9 +765,12 @@ async fn handle_conn(
     endpoint: Arc<str>,
     port: u16,
     meter: bool,
+    sse_notifications: Option<Arc<[Bytes]>>,
+    sse_notif_wire_bytes: usize,
 ) {
     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
         let endpoint = endpoint.clone();
+        let sse_notifications = sse_notifications.clone();
         async move {
             let req_version = req.version();
 
@@ -715,40 +848,88 @@ async fn handle_conn(
                 }
             }
 
-            let (status, body_opt) = dispatch(collected);
+            let sse_enabled = sse_notifications.is_some();
+            let builder = Response::builder().version(req_version);
 
-            let mut builder = Response::builder().status(status).version(req_version);
-            if let Some(body) = body_opt {
-                let body_len = body.len();
-                builder = builder
-                    .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
-                    .header(CONTENT_LENGTH, body_len);
-                // Clone for the log before moving the body into the response.
-                let print_body = if verbose > 0 {
-                    Some(Bytes::copy_from_slice(&body))
-                } else {
-                    None
-                };
-                let resp = builder.body(Full::new(Bytes::from(body))).unwrap();
-                if let Some(c) = counters {
-                    let hs = response_head_size(&resp, body_len);
-                    c.record_response(hs + body_len);
+            match dispatch_rpc(collected, sse_enabled) {
+                DispatchOutput::Json(status, body) => {
+                    let body_len = body.len();
+                    let builder = builder
+                        .status(status)
+                        .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
+                        .header(CONTENT_LENGTH, body_len);
+                    let print_body = if verbose > 0 {
+                        Some(Bytes::copy_from_slice(&body))
+                    } else {
+                        None
+                    };
+                    let resp = builder
+                        .body(McpBody::Full(Full::new(Bytes::from(body))))
+                        .unwrap();
+                    if let Some(c) = counters {
+                        let hs = response_head_size(&resp, body_len);
+                        c.record_response(hs + body_len);
+                    }
+                    if let Some(print_body) = print_body {
+                        log_response(&resp, print_body, verbose);
+                    }
+                    Ok(resp)
                 }
-                if let Some(print_body) = print_body {
-                    log_response(&resp, print_body, verbose);
+                DispatchOutput::SseToolsCall(final_vec) => {
+                    let notifications = sse_notifications.unwrap();
+                    let final_len = final_vec.len();
+                    let print_body = if verbose > 0 {
+                        Some(concat_sse_for_log(&notifications, &final_vec))
+                    } else {
+                        None
+                    };
+                    let builder = builder
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, SSE_CONTENT_TYPE)
+                        .header(CACHE_CONTROL, SSE_CACHE_CONTROL);
+                    let resp = builder
+                        .body(McpBody::Sse {
+                            notifications,
+                            idx: 0,
+                            final_event: Some(Bytes::from(final_vec)),
+                        })
+                        .unwrap();
+                    if let Some(c) = counters {
+                        // On HTTP/1.1 Hyper adds `transfer-encoding: chunked\r\n` (28B)
+                        // instead of `content-length: 0\r\n` (19B) -> +9B in head.
+                        let (hs, body_wire) = if use_http2 {
+                            (
+                                response_head_size(&resp, 0) - 19,
+                                sse_notif_wire_bytes + final_len,
+                            )
+                        } else {
+                            (
+                                response_head_size(&resp, 0) + 9,
+                                sse_notif_wire_bytes + chunked_body_wire_size(final_len),
+                            )
+                        };
+                        c.record_response(hs + body_wire);
+                    }
+                    if let Some(print_body) = print_body {
+                        log_response(&resp, print_body, verbose);
+                    }
+                    Ok(resp)
                 }
-                Ok(resp)
-            } else {
-                builder = builder.header(CONTENT_LENGTH, 0u32);
-                let resp = builder.body(Full::new(Bytes::new())).unwrap();
-                if let Some(c) = counters {
-                    let hs = response_head_size(&resp, 0);
-                    c.record_response(hs);
+                DispatchOutput::Empty(status) => {
+                    let resp = builder
+                        .status(status)
+                        .header(CONTENT_LENGTH, 0u32)
+                        .body(McpBody::Full(Full::new(Bytes::new())))
+                        .unwrap();
+                    if let Some(c) = counters {
+                        let hs = response_head_size(&resp, 0);
+                        c.record_response(hs);
+                    }
+                    if verbose > 0 {
+                        log_response(&resp, Bytes::new(), verbose);
+                    }
+                    Ok(resp)
                 }
-                if verbose > 0 {
-                    log_response(&resp, Bytes::new(), verbose);
-                }
-                Ok(resp)
             }
         }
     });
@@ -824,6 +1005,25 @@ async fn mcp_srv_with_tls(
         endpoint.as_ref()
     );
 
+    let sse_notifications: Option<Arc<[Bytes]>> = opts.mcp_sse.map(build_sse_notifications);
+    let sse_notif_wire_bytes: usize = sse_notifications
+        .as_ref()
+        .map(|notifs| {
+            notifs
+                .iter()
+                .map(|b| {
+                    if opts.http2 {
+                        b.len()
+                    } else {
+                        // Each non-final HTTP/1.1 chunk is `<hex>\r\n<data>\r\n`
+                        // (`chunked_body_wire_size` includes the trailing 5-byte `0\r\n\r\n`).
+                        chunked_body_wire_size(b.len()) - 5
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0);
+
     let mut all_listeners = select_all(listeners.into_iter().map(|l| {
         let port = l.local_addr().unwrap().port();
         Box::pin(unfold(l, move |listener| async move {
@@ -845,8 +1045,21 @@ async fn mcp_srv_with_tls(
                         let verbose = opts.verbose;
                         let meter = opts.meter;
                         let counters = meter.then(|| port_counters(port));
+                        let sse_notifications = sse_notifications.clone();
                         tokio::task::spawn(async move {
-                            handle_conn(tcp_stream, tls_cfg, use_http2, verbose, counters, endpoint, port, meter).await;
+                            handle_conn(
+                                tcp_stream,
+                                tls_cfg,
+                                use_http2,
+                                verbose,
+                                counters,
+                                endpoint,
+                                port,
+                                meter,
+                                sse_notifications,
+                                sse_notif_wire_bytes,
+                            )
+                            .await;
                         });
                     },
                     Some(Err(e)) => {
@@ -866,6 +1079,7 @@ async fn mcp_srv_with_tls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
     fn post(body: &[u8]) -> (StatusCode, Option<Vec<u8>>) {
         dispatch(body)
@@ -1135,5 +1349,61 @@ mod tests {
         let s = String::from_utf8_lossy(&b);
         assert!(s.contains(r#""id":7"#), "{s}");
         assert!(s.contains(r#""text":"42""#), "{s}");
+    }
+
+    #[test]
+    fn sse_mode_only_affects_tools_call() {
+        // ping remains JSON even when sse_tools_call is true
+        match dispatch_rpc(br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, true) {
+            DispatchOutput::Json(st, b) => {
+                assert_eq!(st, StatusCode::OK);
+                assert_eq!(&b[..], br#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+            }
+            _ => panic!("expected Json output for ping"),
+        }
+
+        // tools/call produces SseToolsCall framed with `event: message\ndata: ...\n\n`
+        match dispatch_rpc(
+            br#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"answer"}}"#,
+            true,
+        ) {
+            DispatchOutput::SseToolsCall(b) => {
+                let s = String::from_utf8_lossy(&b);
+                assert_eq!(
+                    s,
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":42,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"42\"}],\"isError\":false}}\n\n"
+                );
+            }
+            _ => panic!("expected SseToolsCall output for tools/call"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_body_streams_notifications_then_final_event() {
+        let notifications = build_sse_notifications(2);
+        let final_event = Bytes::from_static(
+            b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n",
+        );
+        let mut body = McpBody::Sse {
+            notifications,
+            idx: 0,
+            final_event: Some(final_event),
+        };
+        assert!(!body.is_end_stream());
+        assert!(body.size_hint().exact().is_none());
+
+        let mut frames = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let data = frame.unwrap().into_data().unwrap();
+            frames.push(String::from_utf8(data.to_vec()).unwrap());
+        }
+
+        assert!(body.is_end_stream());
+        assert_eq!(frames.len(), 3);
+        assert!(frames[0].starts_with("event: message\ndata: "));
+        assert!(frames[0].contains(r#""step 1/2""#));
+        assert!(frames[0].ends_with("\n\n"));
+        assert!(frames[1].contains(r#""step 2/2""#));
+        assert!(frames[2].contains(r#""id":1"#));
     }
 }

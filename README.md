@@ -100,6 +100,7 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 | `--cert <PATH>` | Path to TLS certificate (PEM). Enables HTTPS (requires `--key`). Supported by the `tokio` runtime only. |
 | `--key <PATH>` | Path to TLS private key (PEM). Enables HTTPS (requires `--cert`). Supported by the `tokio` runtime only. |
 | `--mcp-everything [<PATH>]` | Minimal MCP "everything" mock over Streamable HTTP (tokio only). Bare flag serves on `/mcp`; pass a path (e.g. `--mcp-everything /custom`) for a custom endpoint. Handles `initialize`, `notifications/initialized`, `tools/list`, `ping`, `tools/call` |
+| `--mcp-sse [<EVENTS>]` | Stream MCP `tools/call` responses as `text/event-stream` (SSE) instead of `application/json` (requires `--mcp-everything`). Optionally takes the number of intermediate `notifications/message` SSE chunks to emit before the final JSON-RPC response (default: 0) |
 | `--receive-buffer-size <SIZE>` | Receive buffer size |
 | `--send-buffer-size <SIZE>` | Send buffer size |
 | `--listen-backlog <SIZE>` | Listen backlog queue |
@@ -177,6 +178,10 @@ cargo build --release --all-features          # all runtimes + mimalloc (cargo f
 
 # Custom endpoint path
 ./target/release/statico --mcp-everything /custom --ports 3000
+
+# Stream tools/call responses as SSE (text/event-stream) with 0 or N intermediate notifications
+./target/release/statico --mcp-everything --mcp-sse
+./target/release/statico --mcp-everything --mcp-sse 3
 
 # Full handshake + tool call example
 curl -s http://127.0.0.1:8080/mcp -H 'Content-Type: application/json' \
