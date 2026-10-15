@@ -1,4 +1,4 @@
-use hyper::header::{CONTENT_LENGTH, DATE};
+use hyper::header::{CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
 use hyper::{Request, Response, Version};
 
 /// Length of HTTP date value: "Sun, 06 Nov 1994 08:49:37 GMT"
@@ -63,11 +63,14 @@ pub fn response_head_size<T>(res: &Response<T>, body_len: usize) -> usize {
     }
 
     // Hyper automatically adds `content-length: 0` if body is empty and header not present
-    // Only for responses that can have content-length (not 1xx, 204, 304)
+    // Only for responses that can have content-length (not 1xx, 204, 304) and are not chunked.
     let status = res.status().as_u16();
     let can_have_content_length = !(status < 200 || status == 204 || status == 304);
 
-    if can_have_content_length && !res.headers().contains_key(CONTENT_LENGTH) {
+    if can_have_content_length
+        && !res.headers().contains_key(CONTENT_LENGTH)
+        && !res.headers().contains_key(TRANSFER_ENCODING)
+    {
         if body_len == 0 {
             // "content-length: 0\r\n" = 14 + 2 + 1 + 2 = 19 bytes
             size += 14                // "content-length"

@@ -25,12 +25,13 @@ use bytes::Bytes;
 use futures::stream::{select_all, unfold};
 use http_body::{Body, Frame, SizeHint};
 use http_body_util::Full;
-use hyper::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+use hyper::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use owo_colors::OwoColorize;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -49,6 +50,7 @@ use futures::StreamExt;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const SSE_CONTENT_TYPE: &str = "text/event-stream";
 const SSE_CACHE_CONTROL: &str = "no-cache";
+const CHUNKED_ENCODING: &str = "chunked";
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "statico-everything";
 
@@ -722,13 +724,26 @@ fn log_response<B>(resp: &Response<B>, body: Bytes, verbose: u8) {
 }
 
 #[cold]
-fn concat_sse_for_log(notifications: &[Bytes], final_event: &[u8]) -> Bytes {
-    let total: usize = notifications.iter().map(Bytes::len).sum::<usize>() + final_event.len();
-    let mut buf = Vec::with_capacity(total);
-    for n in notifications {
-        buf.extend_from_slice(n);
+fn concat_sse_for_log(notifications: &[Bytes], final_event: &[u8], chunked: bool) -> Bytes {
+    if !chunked {
+        let total: usize = notifications.iter().map(Bytes::len).sum::<usize>() + final_event.len();
+        let mut buf = Vec::with_capacity(total);
+        for n in notifications {
+            buf.extend_from_slice(n);
+        }
+        buf.extend_from_slice(final_event);
+        return Bytes::from(buf);
     }
+
+    let mut buf = Vec::new();
+    for n in notifications {
+        let _ = write!(buf, "{:x}\r\n", n.len());
+        buf.extend_from_slice(n);
+        buf.extend_from_slice(b"\r\n");
+    }
+    let _ = write!(buf, "{:x}\r\n", final_event.len());
     buf.extend_from_slice(final_event);
+    buf.extend_from_slice(b"\r\n0\r\n\r\n");
     Bytes::from(buf)
 }
 
@@ -879,14 +894,17 @@ async fn handle_conn(
                     let notifications = sse_notifications.unwrap();
                     let final_len = final_vec.len();
                     let print_body = if verbose > 0 {
-                        Some(concat_sse_for_log(&notifications, &final_vec))
+                        Some(concat_sse_for_log(&notifications, &final_vec, !use_http2))
                     } else {
                         None
                     };
-                    let builder = builder
+                    let mut builder = builder
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, SSE_CONTENT_TYPE)
                         .header(CACHE_CONTROL, SSE_CACHE_CONTROL);
+                    if !use_http2 {
+                        builder = builder.header(TRANSFER_ENCODING, CHUNKED_ENCODING);
+                    }
                     let resp = builder
                         .body(McpBody::Sse {
                             notifications,
@@ -895,18 +913,11 @@ async fn handle_conn(
                         })
                         .unwrap();
                     if let Some(c) = counters {
-                        // On HTTP/1.1 Hyper adds `transfer-encoding: chunked\r\n` (28B)
-                        // instead of `content-length: 0\r\n` (19B) -> +9B in head.
-                        let (hs, body_wire) = if use_http2 {
-                            (
-                                response_head_size(&resp, 0) - 19,
-                                sse_notif_wire_bytes + final_len,
-                            )
+                        let hs = response_head_size(&resp, 0);
+                        let body_wire = if use_http2 {
+                            sse_notif_wire_bytes + final_len
                         } else {
-                            (
-                                response_head_size(&resp, 0) + 9,
-                                sse_notif_wire_bytes + chunked_body_wire_size(final_len),
-                            )
+                            sse_notif_wire_bytes + chunked_body_wire_size(final_len)
                         };
                         c.record_response(hs + body_wire);
                     }
