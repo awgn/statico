@@ -60,7 +60,7 @@ const SSE_EVENT_SUFFIX: &[u8] = b"\n\n";
 
 const INIT_RESULT_PREFIX: &[u8] = b",\"result\":{\"protocolVersion\":\"";
 const INIT_RESULT_MID: &[u8] =
-    b"\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"";
+    b"\",\"capabilities\":{\"tools\":{\"listChanged\":false},\"logging\":{}},\"serverInfo\":{\"name\":\"";
 const INIT_RESULT_MID2: &[u8] = b"\",\"version\":\"";
 const INIT_RESULT_SUFFIX: &[u8] =
     b"\"},\"instructions\":\"Minimal everything mock for benchmarking\"}}";
@@ -1105,6 +1105,7 @@ mod tests {
         assert!(s.contains(r#""id":1"#), "{s}");
         assert!(s.contains(r#""protocolVersion":"2025-06-18""#), "{s}");
         assert!(s.contains(r#""tools""#), "{s}");
+        assert!(s.contains(r#""logging":{}"#), "{s}");
     }
 
     #[test]
