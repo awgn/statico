@@ -73,17 +73,19 @@ pub struct PortCounters {
 impl PortCounters {
     #[inline]
     pub fn record_request(&self, bytes: usize) {
-        REQUESTS.add(1);
+        let bytes = bytes as u64;
+        REQUESTS.incr();
         REQUEST_BYTES.add(bytes);
-        self.requests.add(1);
+        self.requests.incr();
         self.request_bytes.add(bytes);
     }
 
     #[inline]
     pub fn record_response(&self, bytes: usize) {
-        RESPONSES.add(1);
+        let bytes = bytes as u64;
+        RESPONSES.incr();
         RESPONSE_BYTES.add(bytes);
-        self.responses.add(1);
+        self.responses.incr();
         self.response_bytes.add(bytes);
     }
 }
